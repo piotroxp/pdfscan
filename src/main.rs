@@ -1,6 +1,6 @@
 use std::env;
 use std::path::PathBuf;
-use lopdf::{Document};
+use lopdf::Document;
 use walkdir::WalkDir;
 use std::thread;
 use std::sync::{Arc, Mutex};
@@ -23,7 +23,7 @@ fn search_phrase_in_pdf(file_path: &str, search_phrase: &str) -> bool {
     false
 }
 
-fn search_pdf_files(root_path: &str, search_phrase: &str) {
+fn search_pdf_files(root_path: &str, search_phrase: &str, results: Arc<Mutex<Vec<String>>>) {
     let mut pdf_files = Vec::new();
 
     for entry in WalkDir::new(root_path).into_iter().filter_map(|e| e.ok()) {
@@ -37,7 +37,6 @@ fn search_pdf_files(root_path: &str, search_phrase: &str) {
                         continue;
                     }
 
-
                     if search_phrase_in_pdf(path.to_str().unwrap(), search_phrase) {
                         pdf_files.push(path.to_string_lossy().into_owned());
                     }
@@ -46,9 +45,8 @@ fn search_pdf_files(root_path: &str, search_phrase: &str) {
         }
     }
 
-    for file in pdf_files {
-        println!("{}", file);
-    }
+    let mut results = results.lock().unwrap();
+    results.extend(pdf_files);
 }
 
 fn print_help() {
@@ -81,7 +79,6 @@ fn zip_files(name: &str, files: Vec<&str>) -> StdResult<(), ZipError> {
     zip.finish()?;
     Ok(())
 }
-
 
 fn main() {
     let mut search_phrase = String::new();
@@ -134,12 +131,13 @@ fn main() {
     let mut handles = Vec::new();
 
     for directory in directories {
+        let results_clone = results.clone();
         let search_phrase_clone = search_phrase.clone();
         let directory_clone = directory.clone();
 
         handles.push(thread::spawn(move || {
             println!("Thread started to search in: {}", directory_clone.to_str().unwrap());
-            search_pdf_files(directory_clone.to_str().unwrap(), &search_phrase_clone);
+            search_pdf_files(directory_clone.to_str().unwrap(), &search_phrase_clone, results_clone);
         }));
     }
 
