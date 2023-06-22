@@ -5,9 +5,11 @@ use walkdir::WalkDir;
 use std::thread;
 use std::sync::{Arc, Mutex};
 use std::fs::File;
-use std::io::Write;
 use zip::write::FileOptions;
 use zip::CompressionMethod::Deflated;
+use std::io::{Read, Write};
+use std::result::Result as StdResult;
+use zip::result::ZipError;
 
 fn search_phrase_in_pdf(file_path: &str, search_phrase: &str) -> bool {
     if let Ok(document) = Document::load(file_path) {
@@ -56,6 +58,30 @@ fn print_help() {
     println!("-z                   Enable zip mode");
     println!("-h                   Display this help message");
 }
+
+fn zip_files(name: &str, files: Vec<&str>) -> StdResult<(), ZipError> {
+    let path = std::path::Path::new(name);
+    let file = File::create(&path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+
+    for file_path in files {
+        let file_name = std::path::Path::new(file_path).file_name().unwrap().to_str().unwrap();
+        let mut file_content = Vec::new();
+        let mut file = File::open(file_path)?;
+        file.read_to_end(&mut file_content)?;
+
+        let options = FileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(0o755); // Set appropriate permissions if required
+
+        zip.start_file(file_name, options)?;
+        zip.write_all(&file_content)?;
+    }
+
+    zip.finish()?;
+    Ok(())
+}
+
 
 fn main() {
     let mut search_phrase = String::new();
@@ -129,20 +155,9 @@ fn main() {
     if zip {
         let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S");
         let zip_file_name = format!("search_results_{}.zip", timestamp);
-        let file = File::create(&zip_file_name).expect("Failed to create ZIP file");
-        let mut zip = zip::ZipWriter::new(file);
-
-        let locked_results = results.lock().unwrap();
-        for (index, result) in locked_results.iter().enumerate() {
-            println!("{}", result);
-            let options = FileOptions::default()
-                .compression_method(Deflated)
-                .unix_permissions(0o755); // Set appropriate permissions if required
-            
-            zip.start_file(result as &str, options).unwrap();            
-        }
-
-        zip.finish().unwrap();
+        let files: Vec<&str> = locked_results.iter().map(|result| result.as_str()).collect();
+        
+        zip_files(&zip_file_name, files).expect("Failed to create ZIP file");
 
         println!("Search results have been zipped to: {}", zip_file_name);
     }
