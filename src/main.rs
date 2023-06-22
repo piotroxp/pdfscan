@@ -82,7 +82,9 @@ fn main() {
                 i += 2;
             }
             "-z" => {
+                eprintln!("Enabled zip mode");
                 zip = true;
+                break;
             }
             "-h" => {
                 print_help();
