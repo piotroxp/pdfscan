@@ -1,0 +1,15 @@
+[package]
+name = "pdf_search"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lopdf = "0.31.0"
+walkdir = "2.3.1"
+dirs = "5.0.1"
+zip = "0.6.6"
+chrono = "0.4"
+
+[[bin]]
+name = "pdf_search"
+path = "src/main.rs"
