@@ -11,17 +11,26 @@ use std::io::{Read, Write};
 use std::result::Result as StdResult;
 use zip::result::ZipError;
 
-fn search_phrase_in_pdf(file_path: &str, search_phrase: &str) -> bool {
-    if let Ok(document) = Document::load(file_path) {
-        let bytes = std::fs::read(file_path).unwrap();
-        let aString = pdf_extract::extract_text_from_mem(&bytes).unwrap();
-        if aString.contains(search_phrase) {
-            return true;
+fn search_phrase_in_pdf(file_path: &str, search_phrase: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    let bytes = match std::fs::read(file_path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            eprintln!("Error occurred while reading the PDF file: {}", err);
+            return Ok(false); // Return false to indicate that the search phrase was not found
         }
-    }
+    };
 
-    false
+    let aString = match pdf_extract::extract_text_from_mem(&bytes) {
+        Ok(aString) => aString,
+        Err(err) => {
+            eprintln!("Error occurred while extracting text from the PDF file: {}", err);
+            return Ok(false); // Return false to indicate that the search phrase was not found
+        }
+    };
+
+    Ok(aString.contains(search_phrase))
 }
+
 
 fn search_pdf_files(root_path: &str, search_phrase: &str, results: Arc<Mutex<Vec<String>>>) {
     let mut pdf_files = Vec::new();
@@ -37,8 +46,13 @@ fn search_pdf_files(root_path: &str, search_phrase: &str, results: Arc<Mutex<Vec
                         continue;
                     }
 
-                    if search_phrase_in_pdf(path.to_str().unwrap(), search_phrase) {
-                        pdf_files.push(path.to_string_lossy().into_owned());
+                    if let Ok(contains_phrase) = search_phrase_in_pdf(path.to_str().unwrap(), search_phrase) {
+                        if contains_phrase {
+                            pdf_files.push(path.to_string_lossy().into_owned());
+                        }
+                    } else {
+                        // Handle the error case, such as logging the error
+                        eprintln!("Error occurred while processing PDF file: {}", path.display());
                     }
                 }
             }
@@ -48,6 +62,7 @@ fn search_pdf_files(root_path: &str, search_phrase: &str, results: Arc<Mutex<Vec
     let mut results = results.lock().unwrap();
     results.extend(pdf_files);
 }
+
 
 fn print_help() {
     println!("Usage: app [options]");
@@ -142,7 +157,7 @@ fn main() {
     }
 
     for handle in handles {
-        handle.join().unwrap();
+        handle.join();
     }
 
     let locked_results = results.lock().unwrap();
