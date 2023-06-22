@@ -12,12 +12,24 @@ use std::result::Result as StdResult;
 use zip::result::ZipError;
 
 fn search_phrase_in_pdf(file_path: &str, search_phrase: &str) -> Result<bool, Box<dyn std::error::Error>> {
-    let bytes = std::fs::read(file_path).map_err(|err| format!("Error occurred while reading the PDF file: {}", err))?;
-    let a_string = std::str::from_utf8(&bytes).map_err(|err| format!("Error occurred while parsing the PDF file as UTF-8: {}", err))?;
+    let bytes = match std::fs::read(file_path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            eprintln!("Error occurred while reading the PDF file: {}", err);
+            return Ok(false); // Return false to indicate that the search phrase was not found
+        }
+    };
 
-    Ok(a_string.contains(search_phrase))
+    let aString = match pdf_extract::extract_text(file_path) {
+        Ok(aString) => aString,
+        Err(err) => {
+            eprintln!("Error occurred while extracting text from the PDF file: {}", err);
+            return Ok(false); // Return false to indicate that the search phrase was not found
+        }
+    };
+
+    Ok(aString.contains(search_phrase))
 }
-
 
 fn search_pdf_files(root_path: &str, search_phrase: &str, results: Arc<Mutex<Vec<String>>>) {
     let mut pdf_files = Vec::new();
