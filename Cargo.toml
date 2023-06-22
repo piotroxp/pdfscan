@@ -9,6 +9,7 @@ walkdir = "2.3.1"
 dirs = "5.0.1"
 zip = "0.6.6"
 chrono = "0.4"
+pdf-extract = "0.6.5"
 
 [[bin]]
 name = "pdf_search"

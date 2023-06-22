@@ -11,12 +11,9 @@ use zip::CompressionMethod::Deflated;
 
 fn search_phrase_in_pdf(file_path: &str, search_phrase: &str) -> bool {
     if let Ok(document) = Document::load(file_path) {
-        let pages = u32::try_from(document.get_pages().len());
-        let mut vec: Vec<u32> = (1..pages.unwrap()).collect();
-        let slice: &mut [u32] = &mut vec;
-        
-        let doc_str = document.extract_text(slice).unwrap();
-        if doc_str.contains(search_phrase) {
+        let bytes = std::fs::read(file_path).unwrap();
+        let aString = pdf_extract::extract_text_from_mem(&bytes).unwrap();
+        if aString.contains(search_phrase) {
             return true;
         }
     }
@@ -132,23 +129,23 @@ fn main() {
     if zip {
         let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S");
         let zip_file_name = format!("search_results_{}.zip", timestamp);
-
         let file = File::create(&zip_file_name).expect("Failed to create ZIP file");
         let mut zip = zip::ZipWriter::new(file);
 
         let locked_results = results.lock().unwrap();
         for (index, result) in locked_results.iter().enumerate() {
+            println!("{}", result);
             let options = FileOptions::default()
                 .compression_method(Deflated)
                 .unix_permissions(0o755); // Set appropriate permissions if required
-
-            let entry_path = format!("result_{}.txt", index);
-            zip.start_file(entry_path, options).unwrap();
-            zip.write_all(result.as_bytes()).unwrap();
+            
+            zip.start_file(result as &str, options).unwrap();            
         }
 
         zip.finish().unwrap();
 
         println!("Search results have been zipped to: {}", zip_file_name);
     }
+
+    return;
 }
