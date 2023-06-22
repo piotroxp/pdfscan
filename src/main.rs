@@ -1,6 +1,6 @@
 use std::env;
 use std::path::PathBuf;
-use lopdf::{Document, Object, StringFormat};
+use lopdf::{Document};
 use walkdir::WalkDir;
 use std::thread;
 use std::sync::{Arc, Mutex};
@@ -52,6 +52,14 @@ fn search_pdf_files(root_path: &str, search_phrase: &str) {
     }
 }
 
+fn print_help() {
+    println!("Usage: app [options]");
+    println!("-s <search phrase>   Set the search phrase");
+    println!("-d <directory>       Add a search directory");
+    println!("-z                   Enable zip mode");
+    println!("-h                   Display this help message");
+}
+
 fn main() {
     let mut search_phrase = String::new();
     let mut directories: Vec<PathBuf> = Vec::new();
@@ -76,6 +84,10 @@ fn main() {
             "-z" => {
                 zip = true;
             }
+            "-h" => {
+                print_help();
+                return;
+            }
             _ => {
                 eprintln!("Invalid argument: {}", args[i]);
                 return;
@@ -99,7 +111,6 @@ fn main() {
     for directory in directories {
         let search_phrase_clone = search_phrase.clone();
         let directory_clone = directory.clone();
-        let results_clone = Arc::clone(&results);
 
         handles.push(thread::spawn(move || {
             println!("Thread started to search in: {}", directory_clone.to_str().unwrap());
