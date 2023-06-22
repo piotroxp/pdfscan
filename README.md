@@ -9,3 +9,7 @@ Usage: app [options]
 -z                   Enable zip mode
 -h                   Display this help message
 ````
+
+A thread is created per directory to scan through it, looking for the search phrases.
+
+One can save the results to a zip by using zip mode.
