@@ -20,7 +20,7 @@ fn search_phrase_in_pdf(file_path: &str, search_phrase: &str) -> Result<bool, Bo
         }
     };
 
-    let aString = match pdf_extract::extract_text(file_path) {
+    let aString = match pdf_extract::extract_text_from_mem(&bytes) {
         Ok(aString) => aString,
         Err(err) => {
             eprintln!("Error occurred while extracting text from the PDF file: {}", err);
