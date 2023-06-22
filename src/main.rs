@@ -12,23 +12,10 @@ use std::result::Result as StdResult;
 use zip::result::ZipError;
 
 fn search_phrase_in_pdf(file_path: &str, search_phrase: &str) -> Result<bool, Box<dyn std::error::Error>> {
-    let bytes = match std::fs::read(file_path) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            eprintln!("Error occurred while reading the PDF file: {}", err);
-            return Ok(false); // Return false to indicate that the search phrase was not found
-        }
-    };
+    let bytes = std::fs::read(file_path).map_err(|err| format!("Error occurred while reading the PDF file: {}", err))?;
+    let a_string = std::str::from_utf8(&bytes).map_err(|err| format!("Error occurred while parsing the PDF file as UTF-8: {}", err))?;
 
-    let aString = match pdf_extract::extract_text_from_mem(&bytes) {
-        Ok(aString) => aString,
-        Err(err) => {
-            eprintln!("Error occurred while extracting text from the PDF file: {}", err);
-            return Ok(false); // Return false to indicate that the search phrase was not found
-        }
-    };
-
-    Ok(aString.contains(search_phrase))
+    Ok(a_string.contains(search_phrase))
 }
 
 
@@ -53,7 +40,9 @@ fn search_pdf_files(root_path: &str, search_phrase: &str, results: Arc<Mutex<Vec
                     } else {
                         // Handle the error case, such as logging the error
                         eprintln!("Error occurred while processing PDF file: {}", path.display());
+                        continue; // Skip to the next file in case of an error
                     }
+                    
                 }
             }
         }
@@ -142,7 +131,6 @@ fn main() {
     }
 
     let results: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-
     let mut handles = Vec::new();
 
     for directory in directories {
