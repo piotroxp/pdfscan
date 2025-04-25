@@ -321,12 +321,15 @@ impl SearchPanel {
                             (self.search_scope == SearchScope::Directory && self.directory_path.is_some()));
                         
                         // Make search button more prominent
-                        if ui.add_enabled(button_enabled && !self.is_searching,
-                            egui::Button::new(if self.is_searching { "Searching..." } else { "Search" })
-                                .min_size(egui::vec2(120.0, 28.0))
-                                .fill(ui.style().visuals.selection.bg_fill))
-                            .clicked()
-                        {
+                        let search_button = egui::Button::new(
+                            RichText::new(if self.is_searching { "Searching..." } else { "Search" })
+                                .size(16.0)
+                                .strong()
+                        )
+                        .min_size(egui::vec2(120.0, 28.0))
+                        .fill(ui.visuals().selection.bg_fill);
+                        
+                        if ui.add_enabled(button_enabled && !self.is_searching, search_button).clicked() {
                             self.perform_search(pdf_viewer);
                         }
                     });

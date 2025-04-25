@@ -5,6 +5,8 @@ A versatile PDF reader and analysis tool with a sleek, minimalist interface.
 ## Features
 
 - **Sleek PDF Reader** with fast loading and navigation
+- **Dual View Modes** - Choose between rendered PDF view or text-only mode
+- **Side-by-Side Text Panel** - Optional text extraction panel alongside rendered PDF
 - **Extract text** from PDF files into a single output file with clear document boundaries
 - **Search for text** within PDF files across multiple directories
 - **Analyze keyword correlations** across PDF documents and rank files by relevance
@@ -46,6 +48,10 @@ PDFScan includes a sleek, minimalist GUI application for reading and analyzing P
 
 - **Clean, Distraction-Free Interface** - Focus on the content, not the UI
 - **Fast PDF Loading** - Optimized for quick opening and navigation
+- **Flexible Viewing Options**:
+  - Rendered PDF view with optional side-by-side text panel
+  - Text-only mode for lightweight viewing
+  - Toggle between viewing modes with a single click
 - **Advanced Search** - Search within documents or across multiple files
 - **Keyword Analysis** - Analyze keyword correlations across documents
 - **Dark Mode** - Easy on the eyes for extended reading sessions

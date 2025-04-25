@@ -20,6 +20,16 @@ pub struct PdfViewer {
     text_data: Arc<Mutex<String>>,
     loading: bool,
     document_loaded: Arc<Mutex<Option<Arc<Document>>>>,
+    // View mode settings
+    show_text_panel: bool,
+    view_mode: ViewMode,
+}
+
+/// View modes for the PDF viewer
+#[derive(PartialEq, Clone, Copy)]
+enum ViewMode {
+    Rendered,
+    TextOnly,
 }
 
 /// Page data
@@ -50,6 +60,9 @@ impl PdfViewer {
             text_data: Arc::new(Mutex::new(String::new())),
             loading: false,
             document_loaded: Arc::new(Mutex::new(None)),
+            // Initialize new fields
+            show_text_panel: false,
+            view_mode: ViewMode::Rendered,
         }
     }
     
@@ -74,6 +87,9 @@ impl PdfViewer {
         std::thread::spawn(move || {
             match Document::load(&path_clone) {
                 Ok(document) => {
+                    // Get the number of pages
+                    let page_count = document.get_pages().len();
+                    
                     // Extract text
                     match extract_text_from_pdf(&path_clone) {
                         Ok(text) => {
@@ -98,7 +114,7 @@ impl PdfViewer {
     }
     
     /// Process loaded document (should be called from the UI thread)
-    fn process_loaded_document(&mut self) {
+    fn process_loaded_document(&mut self, ctx: &Context) {
         if self.loading {
             // Check if document has been loaded by the background thread
             let doc_option = {
@@ -110,10 +126,10 @@ impl PdfViewer {
                 // Update state with the loaded document
                 self.document = Some(doc.clone());
                 
-                // Set a default number of pages (in a real app, we'd get this from the PDF)
-                self.total_pages = 1;
+                // Get the number of pages from the document
+                self.total_pages = doc.get_pages().len();
                 
-                // Load first page text
+                // Load first page
                 self.load_page_text(0);
                 
                 // Document loading complete
@@ -165,7 +181,7 @@ impl PdfViewer {
     /// Show the PDF viewer
     pub fn show(&mut self, ui: &mut Ui, ctx: &Context) {
         // Process any loaded document
-        self.process_loaded_document();
+        self.process_loaded_document(ctx);
         
         // Split the PDF viewer into top controls and content
         ui.vertical(|ui| {
@@ -221,87 +237,287 @@ impl PdfViewer {
                         if ui.add_enabled(self.zoom < 3.0, egui::Button::new("🔍+")).clicked() {
                             self.zoom = (self.zoom + 0.1).min(3.0);
                         }
+
+                        // View mode toggle
+                        ui.separator();
+                        
+                        // Option to toggle text panel
+                        if ui.checkbox(&mut self.show_text_panel, "Show Text").clicked() {
+                            // Toggle was clicked, no additional action needed
+                        }
+                        
+                        // View mode options
+                        ui.label("View:");
+                        if ui.radio(self.view_mode == ViewMode::Rendered, "Rendered").clicked() {
+                            self.view_mode = ViewMode::Rendered;
+                        }
+                        if ui.radio(self.view_mode == ViewMode::TextOnly, "Text Only").clicked() {
+                            self.view_mode = ViewMode::TextOnly;
+                        }
                     });
                 });
             
             // Main content area for the PDF
             if let Some(_doc) = &self.document {
-                // Display the PDF content in a scrollable area
-                egui::ScrollArea::both()
-                    .auto_shrink([false; 2])
-                    .id_source("pdf_content")
-                    .show(ui, |ui| {
-                        if let Some(page_data) = self.pages.get(&self.current_page) {
-                            // Calculate the size of the text display
-                            let text_height = page_data.text.lines().count() as f32 * 18.0;
-                            let content_rect = egui::Rect::from_min_size(
-                                ui.cursor().min,
-                                Vec2::new(
-                                    page_data.size.x * self.zoom, 
-                                    text_height.max(page_data.size.y * self.zoom)
-                                )
-                            );
-                            
-                            // Create a "page" with white background
-                            ui.painter().rect_filled(content_rect, 4.0, Color32::WHITE);
-                            ui.painter().rect_stroke(content_rect, 4.0, egui::Stroke::new(1.0, Color32::GRAY));
-                            
-                            // Show the text in a PDF-like format
-                            ui.allocate_rect(content_rect, egui::Sense::hover());
-                            
-                            // Create a more readable PDF-like layout
-                            let text_rect = content_rect.shrink(20.0);
-                            
-                            // Display PDF content with better formatting
-                            if !page_data.text.is_empty() {
-                                let mut paragraphs = Vec::new();
-                                let mut current_paragraph = String::new();
-                                
-                                for line in page_data.text.lines() {
-                                    let trimmed = line.trim();
-                                    if trimmed.is_empty() {
-                                        if !current_paragraph.is_empty() {
-                                            paragraphs.push(current_paragraph);
-                                            current_paragraph = String::new();
+                match self.view_mode {
+                    ViewMode::Rendered => {
+                        if self.show_text_panel {
+                            // Split view with rendered PDF and text
+                            egui::SidePanel::right("text_panel")
+                                .resizable(true)
+                                .default_width(350.0)
+                                .width_range(200.0..=600.0)
+                                .show_inside(ui, |ui| {
+                                    ui.heading("Extracted Text");
+                                    ui.separator();
+                                    
+                                    if let Some(page_data) = self.pages.get(&self.current_page) {
+                                        egui::ScrollArea::vertical()
+                                            .id_source("text_panel_scroll")
+                                            .show(ui, |ui| {
+                                                if !page_data.text.is_empty() {
+                                                    ui.label(&page_data.text);
+                                                } else {
+                                                    ui.label("No text content available");
+                                                }
+                                            });
+                                    } else {
+                                        ui.label("Loading text content...");
+                                    }
+                                });
+                        }
+                        
+                        // Display the rendered PDF content
+                        egui::CentralPanel::default().show_inside(ui, |ui| {
+                            egui::ScrollArea::both()
+                                .auto_shrink([false; 2])
+                                .id_source("pdf_content")
+                                .show(ui, |ui| {
+                                    // Rendered PDF view
+                                    if let Some(page_data) = self.pages.get(&self.current_page) {
+                                        // Calculate content size with zoom
+                                        let width = 612.0 * self.zoom;  // Standard letter width
+                                        let height = 792.0 * self.zoom; // Standard letter height
+                                        
+                                        // Allocate space for the page
+                                        let (response, painter) = ui.allocate_painter(
+                                            Vec2::new(width, height),
+                                            egui::Sense::hover()
+                                        );
+                                        
+                                        let rect = response.rect;
+                                        
+                                        // Draw the page background
+                                        painter.rect_filled(rect, 0.0, Color32::WHITE);
+                                        painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0, Color32::GRAY));
+                                        
+                                        // Add a header with page number
+                                        let header_rect = egui::Rect::from_min_max(
+                                            rect.min,
+                                            egui::pos2(rect.max.x, rect.min.y + 40.0 * self.zoom)
+                                        );
+                                        painter.rect_filled(header_rect, 0.0, Color32::from_rgb(240, 240, 240));
+                                        
+                                        // Page number text
+                                        painter.text(
+                                            egui::pos2(rect.center().x, header_rect.center().y),
+                                            egui::Align2::CENTER_CENTER,
+                                            format!("Page {} of {}", self.current_page + 1, self.total_pages),
+                                            egui::FontId::proportional(16.0 * self.zoom),
+                                            Color32::BLACK
+                                        );
+                                        
+                                        // Draw content area
+                                        let content_rect = egui::Rect::from_min_max(
+                                            egui::pos2(rect.min.x + 50.0 * self.zoom, header_rect.max.y + 20.0 * self.zoom),
+                                            egui::pos2(rect.max.x - 50.0 * self.zoom, rect.max.y - 50.0 * self.zoom)
+                                        );
+                                        
+                                        // Draw text content
+                                        if !page_data.text.is_empty() {
+                                            let mut paragraphs = Vec::new();
+                                            let mut current_paragraph = String::new();
+                                            
+                                            for line in page_data.text.lines() {
+                                                let trimmed = line.trim();
+                                                if trimmed.is_empty() {
+                                                    if !current_paragraph.is_empty() {
+                                                        paragraphs.push(current_paragraph);
+                                                        current_paragraph = String::new();
+                                                    }
+                                                } else {
+                                                    if !current_paragraph.is_empty() {
+                                                        current_paragraph.push(' ');
+                                                    }
+                                                    current_paragraph.push_str(trimmed);
+                                                }
+                                            }
+                                            
+                                            if !current_paragraph.is_empty() {
+                                                paragraphs.push(current_paragraph);
+                                            }
+                                            
+                                            let font_size = 14.0 * self.zoom;
+                                            let line_height = font_size * 1.5;
+                                            let mut y_offset = content_rect.min.y;
+                                            
+                                            // Limit to first few paragraphs for performance
+                                            for (i, paragraph) in paragraphs.iter().take(15).enumerate() {
+                                                // Wrap text to fit in the content area
+                                                let max_width = content_rect.width();
+                                                let text = paragraph;
+                                                
+                                                // For simplicity, we'll just draw the text and let it clip
+                                                painter.text(
+                                                    egui::pos2(content_rect.min.x, y_offset),
+                                                    egui::Align2::LEFT_TOP,
+                                                    text,
+                                                    egui::FontId::proportional(font_size),
+                                                    Color32::BLACK
+                                                );
+                                                
+                                                y_offset += line_height * 2.0;
+                                                
+                                                // Add a small separator between paragraphs
+                                                if i < paragraphs.len() - 1 {
+                                                    painter.line_segment(
+                                                        [
+                                                            egui::pos2(content_rect.min.x, y_offset - line_height * 0.5),
+                                                            egui::pos2(content_rect.min.x + 100.0 * self.zoom, y_offset - line_height * 0.5)
+                                                        ],
+                                                        egui::Stroke::new(1.0, Color32::LIGHT_GRAY)
+                                                    );
+                                                }
+                                            }
+                                            
+                                            // Indicate that there's more content if necessary
+                                            if paragraphs.len() > 15 {
+                                                painter.text(
+                                                    egui::pos2(content_rect.center().x, content_rect.max.y - 20.0 * self.zoom),
+                                                    egui::Align2::CENTER_BOTTOM,
+                                                    "...",
+                                                    egui::FontId::proportional(16.0 * self.zoom),
+                                                    Color32::DARK_GRAY
+                                                );
+                                            }
+                                        } else {
+                                            // No text available
+                                            painter.text(
+                                                content_rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                "No text content available",
+                                                egui::FontId::proportional(16.0 * self.zoom),
+                                                Color32::DARK_GRAY
+                                            );
+                                        }
+                                        
+                                        // Draw page footer
+                                        let footer_rect = egui::Rect::from_min_max(
+                                            egui::pos2(rect.min.x, rect.max.y - 30.0 * self.zoom),
+                                            rect.max
+                                        );
+                                        
+                                        painter.text(
+                                            footer_rect.center(),
+                                            egui::Align2::CENTER_CENTER,
+                                            "PDFScan Viewer",
+                                            egui::FontId::proportional(12.0 * self.zoom),
+                                            Color32::DARK_GRAY
+                                        );
+                                    } else {
+                                        // Load page data if not available
+                                        self.load_page_text(self.current_page);
+                                        
+                                        ui.vertical_centered(|ui| {
+                                            ui.add_space(50.0);
+                                            ui.label("Rendering page...");
+                                            ui.add_space(50.0);
+                                        });
+                                    }
+                                });
+                        });
+                    },
+                    ViewMode::TextOnly => {
+                        // Display the PDF content in a scrollable area with text
+                        egui::CentralPanel::default().show_inside(ui, |ui| {
+                            egui::ScrollArea::both()
+                                .auto_shrink([false; 2])
+                                .id_source("pdf_content")
+                                .show(ui, |ui| {
+                                    if let Some(page_data) = self.pages.get(&self.current_page) {
+                                        // Calculate the size of the text display
+                                        let text_height = page_data.text.lines().count() as f32 * 18.0;
+                                        let content_rect = egui::Rect::from_min_size(
+                                            ui.cursor().min,
+                                            Vec2::new(
+                                                page_data.size.x * self.zoom, 
+                                                text_height.max(page_data.size.y * self.zoom)
+                                            )
+                                        );
+                                        
+                                        // Create a "page" with white background
+                                        ui.painter().rect_filled(content_rect, 4.0, Color32::WHITE);
+                                        ui.painter().rect_stroke(content_rect, 4.0, egui::Stroke::new(1.0, Color32::GRAY));
+                                        
+                                        // Show the text in a PDF-like format
+                                        ui.allocate_rect(content_rect, egui::Sense::hover());
+                                        
+                                        // Create a more readable PDF-like layout
+                                        let text_rect = content_rect.shrink(20.0);
+                                        
+                                        // Display PDF content with better formatting
+                                        if !page_data.text.is_empty() {
+                                            let mut paragraphs = Vec::new();
+                                            let mut current_paragraph = String::new();
+                                            
+                                            for line in page_data.text.lines() {
+                                                let trimmed = line.trim();
+                                                if trimmed.is_empty() {
+                                                    if !current_paragraph.is_empty() {
+                                                        paragraphs.push(current_paragraph);
+                                                        current_paragraph = String::new();
+                                                    }
+                                                } else {
+                                                    if !current_paragraph.is_empty() {
+                                                        current_paragraph.push(' ');
+                                                    }
+                                                    current_paragraph.push_str(trimmed);
+                                                }
+                                            }
+                                            
+                                            if !current_paragraph.is_empty() {
+                                                paragraphs.push(current_paragraph);
+                                            }
+                                            
+                                            let mut current_y = text_rect.min.y;
+                                            let line_height = 20.0;
+                                            
+                                            for paragraph in paragraphs {
+                                                let paragraph_rect = egui::Rect::from_min_max(
+                                                    egui::pos2(text_rect.min.x, current_y),
+                                                    egui::pos2(text_rect.max.x, current_y + line_height * 5.0)
+                                                );
+                                                
+                                                ui.put(paragraph_rect, egui::Label::new(&paragraph).wrap(true));
+                                                current_y += line_height * 2.0;
+                                            }
+                                        } else {
+                                            ui.put(text_rect, egui::Label::new("No text content available"));
+                                            ui.vertical_centered(|ui| {
+                                                ui.label("No text content available");
+                                            });
                                         }
                                     } else {
-                                        if !current_paragraph.is_empty() {
-                                            current_paragraph.push(' ');
-                                        }
-                                        current_paragraph.push_str(trimmed);
+                                        ui.vertical_centered(|ui| {
+                                            ui.add_space(50.0);
+                                            ui.label("Loading page content...");
+                                            ui.add_space(50.0);
+                                        });
                                     }
-                                }
-                                
-                                if !current_paragraph.is_empty() {
-                                    paragraphs.push(current_paragraph);
-                                }
-                                
-                                let mut current_y = text_rect.min.y;
-                                let line_height = 20.0;
-                                
-                                for paragraph in paragraphs {
-                                    let paragraph_rect = egui::Rect::from_min_max(
-                                        egui::pos2(text_rect.min.x, current_y),
-                                        egui::pos2(text_rect.max.x, current_y + line_height * 5.0)
-                                    );
-                                    
-                                    ui.put(paragraph_rect, egui::Label::new(&paragraph).wrap(true));
-                                    current_y += line_height * 2.0;
-                                }
-                            } else {
-                                ui.put(text_rect, egui::Label::new("No text content available"));
-                                ui.vertical_centered(|ui| {
-                                    ui.label("No text content available");
                                 });
-                            }
-                        } else {
-                            ui.vertical_centered(|ui| {
-                                ui.add_space(50.0);
-                                ui.label("Loading page content...");
-                                ui.add_space(50.0);
-                            });
-                        }
-                    });
+                        });
+                    }
+                }
             } else if self.loading {
                 // Show loading indicator
                 ui.vertical_centered(|ui| {

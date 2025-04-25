@@ -14,7 +14,8 @@ indicatif = "0.17.8"
 dirs = "5.0.1"
 zip = "0.6.6"
 chrono = "0.4.35"
-lopdf = "0.31.0"
+lopdf = "0.31.0"  # Used for basic PDF manipulation, consider adding a better PDF rendering library for production
+                  # Alternatives: pdf_render, printpdf, mupdf-rs, etc.
 
 # UI dependencies
 eframe = "0.26.2"
