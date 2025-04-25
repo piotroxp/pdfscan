@@ -16,7 +16,7 @@ zip = "0.6.6"
 chrono = "0.4.35"
 lopdf = "0.31.0"  # Used for basic PDF manipulation, consider adding a better PDF rendering library for production
                   # Alternatives: pdf_render, printpdf, mupdf-rs, etc.
-poppler-rs = "0.24.1"  # Added for proper PDF page rendering
+poppler-rs = { version = "0.24.1", features = ["v22_2"] }  # Using a more stable feature version
 
 # UI dependencies
 eframe = "0.26.2"
