@@ -1,16 +1,21 @@
 [package]
-name = "pdf_search"
+name = "pdfscan"
 version = "0.1.0"
 edition = "2021"
+authors = ["PDF Scanner Developer"]
+description = "A tool for extracting text from PDFs and searching within PDF documents"
 
 [dependencies]
-lopdf = "0.31.0"
-walkdir = "2.3.1"
+clap = { version = "4.5", features = ["derive"] }
+pdf-extract = "0.7.0"
+walkdir = "2.5.0"
+rayon = "1.10.0"
+indicatif = "0.17.8"
 dirs = "5.0.1"
 zip = "0.6.6"
-chrono = "0.4"
-pdf-extract = "0.6.5"
+chrono = "0.4.35"
+lopdf = "0.31.0"
 
 [[bin]]
-name = "pdf_search"
+name = "pdfscan"
 path = "src/main.rs"
