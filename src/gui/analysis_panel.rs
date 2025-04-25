@@ -25,6 +25,7 @@ struct AnalysisResult {
 }
 
 /// Document with rank
+#[derive(Clone)]
 struct RankedDocument {
     name: String,
     path: PathBuf,

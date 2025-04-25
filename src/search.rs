@@ -164,7 +164,7 @@ fn search_phrase_in_pdf(file_path: &Path, search_phrase: &str) -> Result<bool, S
 }
 
 /// Create a zip file containing the specified PDF files
-fn zip_files(zip_file_name: &str, file_paths: &[String]) -> Result<(), SearchError> {
+pub fn zip_files(zip_file_name: &str, file_paths: &[String]) -> Result<(), SearchError> {
     let path = Path::new(zip_file_name);
     let file = File::create(path)?;
     let mut zip = zip::ZipWriter::new(file);

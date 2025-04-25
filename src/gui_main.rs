@@ -1,5 +1,5 @@
-use eframe::{NativeOptions, ViewportBuilder, run_native};
-use pdfscan::gui::app::PdfScanApp;
+use eframe::{NativeOptions, run_native};
+use egui::ViewportBuilder;
 
 mod gui;
 mod extract;
@@ -15,8 +15,7 @@ fn main() -> Result<(), eframe::Error> {
         viewport: ViewportBuilder::default()
             .with_inner_size([1280.0, 720.0])
             .with_min_inner_size([800.0, 600.0])
-            .with_title("PDFScan")
-            .build(),
+            .with_title("PDFScan"),
         ..Default::default()
     };
     
@@ -24,6 +23,6 @@ fn main() -> Result<(), eframe::Error> {
     run_native(
         "PDFScan",
         options,
-        Box::new(|cc| Box::new(PdfScanApp::new(cc)))
+        Box::new(|cc| Box::new(crate::gui::PdfScanApp::new(cc)))
     )
 } 
