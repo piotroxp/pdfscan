@@ -4,6 +4,7 @@ use std::process;
 
 mod extract;
 mod search;
+mod stats;
 
 #[derive(Parser)]
 #[command(author, version, about = "PDF text extraction and search tool")]
@@ -37,6 +38,25 @@ enum Commands {
         #[arg(short, long)]
         zip: bool,
     },
+
+    /// Analyze keyword correlations in PDF files
+    Analyze {
+        /// Keywords to analyze
+        #[arg(short, long, required = true)]
+        keywords: Vec<String>,
+        
+        /// Input paths (directories or PDF files)
+        #[arg(short, long, required = true)]
+        input_paths: Vec<String>,
+        
+        /// Output report file path
+        #[arg(short, long, default_value = "pdf_analysis_report.txt")]
+        output_file: String,
+        
+        /// Correlation threshold (0.0 to 1.0)
+        #[arg(short, long, default_value_t = 0.1)]
+        threshold: f64,
+    },
 }
 
 fn main() {
@@ -48,6 +68,9 @@ fn main() {
         },
         Commands::Search { search_phrase, directories, zip } => {
             search::run(&search_phrase, &directories, zip)
+        },
+        Commands::Analyze { keywords, input_paths, output_file, threshold } => {
+            stats::run(&input_paths, &keywords, &output_file, threshold)
         },
     };
 
