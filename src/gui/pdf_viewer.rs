@@ -207,56 +207,121 @@ impl PdfViewer {
                 let width_px = (width * scale) as u32;
                 let height_px = (height * scale) as u32;
                 
+                // Create a new image buffer with white background
                 let mut img = ImageBuffer::<Rgba<u8>, Vec<u8>>::new(width_px, height_px);
-                
-                // Fill with white background
                 for pixel in img.pixels_mut() {
                     *pixel = Rgba([255, 255, 255, 255]);
                 }
                 
-                // Use a simplified approach to render to our image buffer
-                // This is not perfect but avoids dependency on Cairo
-                // In a real-world application, you would want to use Cairo properly
+                // Render the PDF page to our image buffer
+                let mut rendered = false;
                 
-                // Create a simple context for rendering - we'll just draw the page outline
-                let mut drawn = false;
-                
-                // Try to render using the text content as a fallback
-                if let Some(_) = page.text() {
-                    drawn = true;
-                    // We have the text - at minimum we can place it on a white background
-                    
-                    // Draw a simple border for the page
-                    for x in 0..width_px {
-                        // Top and bottom border
-                        if x < width_px {
-                            img.put_pixel(x, 0, Rgba([200, 200, 200, 255]));
-                            img.put_pixel(x, height_px - 1, Rgba([200, 200, 200, 255]));
+                // Use Poppler's render method to draw the actual PDF content
+                if let Ok(surface) = poppler::cairo::ImageSurface::create(
+                    poppler::cairo::Format::Rgb24,
+                    width_px as i32,
+                    height_px as i32
+                ) {
+                    if let Ok(cr) = poppler::cairo::Context::new(&surface) {
+                        // Clear background to white
+                        cr.set_source_rgb(1.0, 1.0, 1.0);
+                        cr.paint();
+                        
+                        // Set high quality rendering options
+                        cr.set_antialias(poppler::cairo::Antialias::Best);
+                        cr.set_operator(poppler::cairo::Operator::Over);
+                        
+                        // Get page rotation if any
+                        let rotation = page.get_rotation();
+                        
+                        // Apply scaling and handle rotation
+                        match rotation {
+                            0 => {
+                                // No rotation, just scale
+                                cr.scale(scale, scale);
+                            },
+                            90 => {
+                                // 90 degrees rotation
+                                cr.translate(width_px as f64, 0.0);
+                                cr.rotate(std::f64::consts::PI / 2.0);
+                                cr.scale(scale, scale);
+                            },
+                            180 => {
+                                // 180 degrees rotation
+                                cr.translate(width_px as f64, height_px as f64);
+                                cr.rotate(std::f64::consts::PI);
+                                cr.scale(scale, scale);
+                            },
+                            270 => {
+                                // 270 degrees rotation
+                                cr.translate(0.0, height_px as f64);
+                                cr.rotate(3.0 * std::f64::consts::PI / 2.0);
+                                cr.scale(scale, scale);
+                            },
+                            _ => {
+                                // Unexpected rotation, just scale
+                                cr.scale(scale, scale);
+                            }
                         }
-                    }
-                    
-                    for y in 0..height_px {
-                        // Left and right border
-                        if y < height_px {
-                            img.put_pixel(0, y, Rgba([200, 200, 200, 255]));
-                            img.put_pixel(width_px - 1, y, Rgba([200, 200, 200, 255]));
+                        
+                        // Render the page with high quality settings
+                        page.render_for_printing(&cr);
+                        
+                        // Get the data from the cairo surface
+                        if let Ok(data) = surface.get_data() {
+                            let stride = surface.get_stride() as usize;
+                            
+                            // Convert cairo data (which is in RGB24) to our RGBA format
+                            for y in 0..height_px as usize {
+                                for x in 0..width_px as usize {
+                                    // Calculate the position in the cairo surface data
+                                    // Cairo surface data is 4-byte aligned rows with BGR byte order
+                                    let cairo_idx = y * stride + x * 4;
+                                    
+                                    if cairo_idx + 2 < data.len() {
+                                        // Convert BGR to RGB (Cairo stores as B, G, R, A)
+                                        let b = data[cairo_idx];
+                                        let g = data[cairo_idx + 1];
+                                        let r = data[cairo_idx + 2];
+                                        
+                                        // Set the pixel in our RGBA image (R, G, B, A)
+                                        img.put_pixel(x as u32, y as u32, Rgba([r, g, b, 255]));
+                                    }
+                                }
+                            }
+                            rendered = true;
                         }
                     }
                 }
                 
-                if !drawn {
-                    // If we can't render or get text, at least provide a placeholder
-                    // Draw a border and page number
+                // If we failed to render using Cairo, add a border as fallback
+                if !rendered {
+                    // Draw a border around the page
                     for x in 0..width_px {
-                        for y in 0..height_px {
-                            if x < 2 || x > width_px - 3 || y < 2 || y > height_px - 3 {
-                                img.put_pixel(x, y, Rgba([200, 200, 200, 255]));
-                            }
-                        }
+                        // Top and bottom border
+                        img.put_pixel(x, 0, Rgba([200, 200, 200, 255]));
+                        img.put_pixel(x, height_px - 1, Rgba([200, 200, 200, 255]));
                     }
                     
-                    // Note: In a real implementation, you would want to use a proper
-                    // font rendering library to draw the page number text
+                    for y in 0..height_px {
+                        // Left and right border
+                        img.put_pixel(0, y, Rgba([200, 200, 200, 255]));
+                        img.put_pixel(width_px - 1, y, Rgba([200, 200, 200, 255]));
+                    }
+                    
+                    // Add a warning in the middle of the page
+                    let text = if let Some(text) = page.text() {
+                        if !text.is_empty() {
+                            "Rendering failed, but text is available in Text Mode"
+                        } else {
+                            "Rendering failed, no text content available"
+                        }
+                    } else {
+                        "Rendering failed, no text content available"
+                    };
+                    
+                    // Note: We can't actually render text here in this simple implementation
+                    // but in a real app we would use a font rendering library
                 }
                 
                 // Convert to egui texture
