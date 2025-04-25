@@ -21,7 +21,7 @@ A versatile command-line tool for extracting text from PDFs and searching within
 
 ```bash
 # Clone this repository
-git clone https://github.com/username/pdfscan.git
+git clone https://github.com/piotroxp/pdfscan.git
 cd pdfscan
 
 # Build the project
