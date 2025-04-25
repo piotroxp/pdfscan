@@ -218,14 +218,62 @@ impl PdfScanApp {
 
 impl eframe::App for PdfScanApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        // Configure the UI
-        egui::CentralPanel::default().show(ctx, |ui| {
+        // Create the top-level layout
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // Draw the menu bar
             self.menu_bar(ui, ctx);
-            
-            // Draw the sidebar
-            self.sidebar(ui, ctx);
-            
+        });
+
+        // Draw the sidebar if enabled
+        if self.show_sidebar {
+            egui::SidePanel::left("sidebar")
+                .resizable(true)
+                .default_width(self.sidebar_width)
+                .width_range(150.0..=350.0)
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.heading("PDFScan");
+                    });
+                    
+                    ui.separator();
+                    
+                    ui.horizontal(|ui| {
+                        if ui.selectable_label(self.current_tab == Tab::Viewer, "📄 Viewer").clicked() {
+                            self.current_tab = Tab::Viewer;
+                        }
+                        if ui.selectable_label(self.current_tab == Tab::Search, "🔍 Search").clicked() {
+                            self.current_tab = Tab::Search;
+                        }
+                        if ui.selectable_label(self.current_tab == Tab::Analysis, "📊 Analysis").clicked() {
+                            self.current_tab = Tab::Analysis;
+                        }
+                    });
+                    
+                    ui.separator();
+                    
+                    // Display different sidebar content based on the selected tab
+                    match self.current_tab {
+                        Tab::Viewer => {
+                            // Show document outline if available
+                            self.pdf_viewer.show_outline(ui);
+                        },
+                        Tab::Search => {
+                            // Show search options
+                            self.search_panel.show_options(ui, &self.pdf_viewer);
+                        },
+                        Tab::Analysis => {
+                            // Show analysis options
+                            self.analysis_panel.show_options(ui, &self.pdf_viewer);
+                        },
+                    }
+                    
+                    // Store the current sidebar width
+                    self.sidebar_width = ui.available_width();
+                });
+        }
+        
+        // Draw the main content
+        egui::CentralPanel::default().show(ctx, |ui| {
             // Draw the main content based on the selected tab
             match self.current_tab {
                 Tab::Viewer => {

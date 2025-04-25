@@ -59,9 +59,7 @@ impl SearchPanel {
             .hint_text("Enter search text...")
             .desired_width(ui.available_width());
         
-        if ui.add(text_edit).changed() {
-            // Could implement live search here
-        }
+        ui.add(text_edit);
         
         ui.add_space(5.0);
         
@@ -72,44 +70,52 @@ impl SearchPanel {
         
         // Search scope
         ui.label(RichText::new("Search scope:").strong());
-        ui.radio_value(&mut self.search_in_current, true, "Current document");
         
         let has_current = pdf_viewer.current_pdf().is_some();
-        if !has_current {
-            ui.label(RichText::new("No document open").italics().color(Color32::GRAY));
-        }
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.search_in_current, true, "Current document");
+            if !has_current {
+                ui.label(RichText::new("(No document open)").italics().color(Color32::GRAY));
+            }
+        });
         
-        ui.radio_value(&mut self.search_in_directory, true, "Directory");
-        
-        if self.search_in_directory {
-            ui.horizontal(|ui| {
-                let dir_name = match &self.directory_path {
-                    Some(path) => path.to_string_lossy().to_string(),
-                    None => "Select directory...".to_string(),
-                };
-                
-                if ui.button(&dir_name).clicked() {
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.search_in_directory, true, "Directory");
+            
+            if self.search_in_directory {
+                if ui.button("📁 Select...").clicked() {
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
                         self.directory_path = Some(path);
                     }
                 }
-            });
-        }
+            }
+        });
         
+        // Show selected directory
         if self.search_in_directory {
+            if let Some(path) = &self.directory_path {
+                ui.group(|ui| {
+                    ui.label(RichText::new("Selected directory:").strong());
+                    ui.label(path.to_string_lossy().to_string());
+                });
+            } else {
+                ui.label(RichText::new("No directory selected").italics());
+            }
+            
             ui.checkbox(&mut self.create_zip, "Create ZIP with results");
         }
         
         ui.add_space(15.0);
         
         // Search button
-        let button_text = if self.is_searching {
-            "Searching..."
-        } else {
-            "Search"
-        };
+        let button_enabled = (!self.search_query.is_empty()) && 
+                           ((self.search_in_current && has_current) || 
+                            (self.search_in_directory && self.directory_path.is_some()));
         
-        if ui.button(button_text).clicked() && !self.is_searching && !self.search_query.is_empty() {
+        if ui.add_enabled(button_enabled && !self.is_searching,
+            egui::Button::new(if self.is_searching { "Searching..." } else { "Search" }))
+            .clicked()
+        {
             self.perform_search(pdf_viewer);
         }
     }
@@ -267,52 +273,134 @@ impl SearchPanel {
     /// Show the search panel in the main content area
     pub fn show(&mut self, ui: &mut Ui, ctx: &Context, pdf_viewer: &mut PdfViewer) {
         ui.vertical(|ui| {
-            ui.heading("PDF Search");
-            
-            // Search input at the top
+            // Top search bar
             ui.horizontal(|ui| {
-                let text_edit = TextEdit::singleline(&mut self.search_query)
-                    .hint_text("Search in PDFs...")
-                    .desired_width(ui.available_width() - 100.0);
-                
-                ui.add(text_edit);
-                
-                if ui.button("Search").clicked() && !self.search_query.is_empty() {
-                    self.perform_search(pdf_viewer);
-                }
-            });
-            
-            ui.add_space(10.0);
-            
-            // Results section
-            ui.heading("Results");
-            
-            if self.search_results.is_empty() {
-                if self.is_searching {
-                    ui.label("Searching...");
-                } else if !self.search_query.is_empty() {
-                    ui.label("No results found");
-                } else {
-                    ui.label("Enter a search query to begin");
-                }
-            } else {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for result in &self.search_results {
-                        ui.collapsing(format!("{} ({} matches)", result.file_name, result.match_count), |ui| {
-                            for (i, m) in result.matches.iter().enumerate() {
-                                let text = m.text.replace(&self.search_query, &format!("<<{}>>", &self.search_query));
-                                ui.label(format!("{}. ...{}...", i + 1, text));
-                                
-                                if ui.button("Open").clicked() {
-                                    pdf_viewer.load_pdf(&result.file_path);
-                                    // In a real implementation, we would also jump to this specific match
-                                }
-                                
-                                ui.separator();
-                            }
-                        });
+                ui.heading("PDF Search");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("📁 Select Directory").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.directory_path = Some(path);
+                            self.search_in_directory = true;
+                        }
                     }
                 });
+            });
+            
+            ui.separator();
+            
+            // Split view for directory tree and results
+            egui::TopBottomPanel::top("search_top_panel")
+                .resizable(true)
+                .height_range(50.0..=150.0)
+                .show_inside(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        // Search input
+                        let text_edit = TextEdit::singleline(&mut self.search_query)
+                            .hint_text("Search in PDFs...")
+                            .desired_width(ui.available_width() - 120.0);
+                        
+                        ui.add(text_edit);
+                        ui.checkbox(&mut self.case_sensitive, "Case sensitive");
+                        
+                        let button_enabled = !self.search_query.is_empty() && 
+                            ((self.search_in_current && pdf_viewer.current_pdf().is_some()) || 
+                            (self.search_in_directory && self.directory_path.is_some()));
+                        
+                        if ui.add_enabled(button_enabled && !self.is_searching,
+                            egui::Button::new(if self.is_searching { "Searching..." } else { "Search" }))
+                            .clicked()
+                        {
+                            self.perform_search(pdf_viewer);
+                        }
+                    });
+                    
+                    // Search scope selection
+                    ui.horizontal(|ui| {
+                        ui.label("Search in:");
+                        ui.radio_value(&mut self.search_in_current, true, "Current document");
+                        ui.radio_value(&mut self.search_in_directory, true, "Directory");
+                        
+                        if self.search_in_directory {
+                            ui.checkbox(&mut self.create_zip, "Create ZIP with results");
+                        }
+                    });
+                    
+                    // Show selected directory if any
+                    if self.search_in_directory {
+                        if let Some(path) = &self.directory_path {
+                            ui.horizontal(|ui| {
+                                ui.label("Directory:");
+                                ui.label(path.to_string_lossy().to_string());
+                            });
+                        } else {
+                            ui.label(RichText::new("No directory selected. Please select a directory.").italics());
+                        }
+                    }
+                });
+            
+            // Results section
+            ui.vertical_centered_justified(|ui| {
+                ui.heading("Results");
+            });
+            
+            if self.search_results.is_empty() {
+                ui.vertical_centered(|ui| {
+                    if self.is_searching {
+                        ui.label("Searching...");
+                    } else if !self.search_query.is_empty() {
+                        ui.label("No results found");
+                    } else {
+                        ui.label("Enter a search query and select where to search");
+                    }
+                });
+            } else {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        for result in &self.search_results {
+                            ui.push_id(&result.file_path, |ui| {
+                                let header = format!("{} ({} matches)", result.file_name, result.match_count);
+                                
+                                egui::CollapsingHeader::new(header)
+                                    .id_source(&result.file_path)
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            if ui.button("Open PDF").clicked() {
+                                                pdf_viewer.load_pdf(&result.file_path);
+                                            }
+                                            ui.label(RichText::new(&*result.file_path.to_string_lossy()).monospace());
+                                        });
+                                        
+                                        ui.add_space(5.0);
+                                        
+                                        // Show matches
+                                        for (i, m) in result.matches.iter().enumerate() {
+                                            ui.group(|ui| {
+                                                // Create a highlighted version of the text
+                                                let text = if self.search_query.is_empty() {
+                                                    m.text.clone()
+                                                } else {
+                                                    // Highlight all occurrences of the search query
+                                                    let parts: Vec<&str> = m.text.split(&self.search_query).collect();
+                                                    if parts.len() <= 1 {
+                                                        m.text.clone()
+                                                    } else {
+                                                        parts.join(&format!("<<{}>>", &self.search_query))
+                                                    }
+                                                };
+                                                
+                                                ui.label(format!("{}. ...{}...", i + 1, text));
+                                                
+                                                if ui.button("Jump to match").clicked() {
+                                                    pdf_viewer.load_pdf(&result.file_path);
+                                                    // TODO: Jump to the specific match position
+                                                }
+                                            });
+                                        }
+                                    });
+                            });
+                        }
+                    });
             }
         });
     }

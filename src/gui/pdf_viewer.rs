@@ -167,106 +167,123 @@ impl PdfViewer {
         // Process any loaded document
         self.process_loaded_document();
         
-        // Display the PDF content
-        if let Some(pdf_path) = &self.current_pdf_path {
-            ui.vertical(|ui| {
-                // PDF navigation controls
-                ui.horizontal(|ui| {
-                    // Page navigation
-                    if ui.button("◀ Previous").clicked() && self.current_page > 0 {
-                        self.current_page -= 1;
-                        self.load_page_text(self.current_page);
-                    }
-                    
-                    ui.label(format!("Page {} of {}", self.current_page + 1, self.total_pages.max(1)));
-                    
-                    if ui.button("Next ▶").clicked() && self.current_page < self.total_pages.saturating_sub(1) {
-                        self.current_page += 1;
-                        self.load_page_text(self.current_page);
-                    }
-                    
-                    // Zoom controls
-                    ui.separator();
-                    
-                    if ui.button("🔍-").clicked() {
-                        self.zoom = (self.zoom - 0.1).max(0.1);
-                    }
-                    
-                    ui.label(format!("{:.0}%", self.zoom * 100.0));
-                    
-                    if ui.button("🔍+").clicked() {
-                        self.zoom = (self.zoom + 0.1).min(3.0);
-                    }
-                    
-                    ui.separator();
-                    
-                    // Optional document information
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(&self.document_title).strong());
-                    });
-                });
-                
-                ui.separator();
-                
-                // PDF content view
-                ScrollArea::both().id_source("pdf_view").show(ui, |ui| {
-                    if let Some(_) = &self.document {
-                        // Render the current page (in a real implementation, this would display the actual PDF page)
-                        // For now, we'll just show the text content
-                        if let Some(page_data) = self.pages.get(&self.current_page) {
-                            let text_height = page_data.text.lines().count() as f32 * 18.0;
-                            let content_rect = egui::Rect::from_min_size(
-                                ui.cursor().min,
-                                Vec2::new(page_data.size.x * self.zoom, text_height.max(page_data.size.y * self.zoom))
-                            );
-                            
-                            // Set a white background for the page
-                            ui.painter().rect_filled(content_rect, 0.0, Color32::WHITE);
-                            
-                            // Add a slight border
-                            ui.painter().rect_stroke(content_rect, 0.0, egui::Stroke::new(1.0, Color32::GRAY));
-                            
-                            // Show the text
-                            ui.allocate_rect(content_rect, egui::Sense::hover());
-                            ui.put(content_rect.shrink(10.0), egui::Label::new(&page_data.text));
-                        } else {
-                            ui.label("Loading page content...");
-                        }
-                    } else if self.loading {
-                        ui.vertical_centered(|ui| {
-                            ui.add_space(50.0);
-                            ui.label("Loading PDF...");
-                            ui.add_space(50.0);
+        // Split the PDF viewer into top controls and content
+        ui.vertical(|ui| {
+            // Top panel with controls
+            egui::TopBottomPanel::top("pdf_controls")
+                .resizable(false)
+                .frame(egui::Frame::none().fill(ui.style().visuals.panel_fill))
+                .show_inside(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        // Document title
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            if !self.document_title.is_empty() {
+                                ui.label(RichText::new(&self.document_title).strong().heading());
+                            }
                         });
-                    } else {
-                        ui.vertical_centered(|ui| {
-                            ui.add_space(150.0);
-                            ui.heading("Welcome to PDFScan");
-                            ui.label("Use File > Open PDF to open a document");
-                            ui.add_space(20.0);
-                            if ui.button("Open PDF...").clicked() {
+                        
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // Open PDF button
+                            if ui.button("📂 Open PDF...").clicked() {
                                 if let Some(path) = Self::open_file_dialog() {
                                     self.load_pdf(&path);
                                 }
                             }
                         });
-                    }
+                    });
+                    
+                    // Navigation controls
+                    ui.horizontal(|ui| {
+                        // Page navigation
+                        if ui.add_enabled(self.current_page > 0, egui::Button::new("◀ Previous")).clicked() {
+                            self.current_page = self.current_page.saturating_sub(1);
+                            self.load_page_text(self.current_page);
+                        }
+                        
+                        let total_pages = self.total_pages.max(1);
+                        ui.label(format!("Page {} of {}", self.current_page + 1, total_pages));
+                        
+                        if ui.add_enabled(self.current_page < self.total_pages.saturating_sub(1), 
+                                        egui::Button::new("Next ▶")).clicked() {
+                            self.current_page = (self.current_page + 1).min(self.total_pages.saturating_sub(1));
+                            self.load_page_text(self.current_page);
+                        }
+                        
+                        // Zoom controls
+                        ui.separator();
+                        
+                        if ui.add_enabled(self.zoom > 0.2, egui::Button::new("🔍-")).clicked() {
+                            self.zoom = (self.zoom - 0.1).max(0.1);
+                        }
+                        
+                        ui.label(format!("{:.0}%", self.zoom * 100.0));
+                        
+                        if ui.add_enabled(self.zoom < 3.0, egui::Button::new("🔍+")).clicked() {
+                            self.zoom = (self.zoom + 0.1).min(3.0);
+                        }
+                    });
                 });
-            });
-        } else {
-            // No PDF open - show welcome screen
-            ui.vertical_centered(|ui| {
-                ui.add_space(150.0);
-                ui.heading("Welcome to PDFScan");
-                ui.label("Use File > Open PDF to open a document");
-                ui.add_space(20.0);
-                if ui.button("Open PDF...").clicked() {
-                    if let Some(path) = Self::open_file_dialog() {
-                        self.load_pdf(&path);
+            
+            // Main content area for the PDF
+            if let Some(_doc) = &self.document {
+                // Display the PDF content in a scrollable area
+                egui::ScrollArea::both()
+                    .auto_shrink([false; 2])
+                    .id_source("pdf_content")
+                    .show(ui, |ui| {
+                        if let Some(page_data) = self.pages.get(&self.current_page) {
+                            // Calculate the size of the text display
+                            let text_height = page_data.text.lines().count() as f32 * 18.0;
+                            let content_rect = egui::Rect::from_min_size(
+                                ui.cursor().min,
+                                Vec2::new(
+                                    page_data.size.x * self.zoom, 
+                                    text_height.max(page_data.size.y * self.zoom)
+                                )
+                            );
+                            
+                            // Create a "page" with white background
+                            ui.painter().rect_filled(content_rect, 4.0, Color32::WHITE);
+                            ui.painter().rect_stroke(content_rect, 4.0, egui::Stroke::new(1.0, Color32::GRAY));
+                            
+                            // Show the text
+                            ui.allocate_rect(content_rect, egui::Sense::hover());
+                            
+                            // Add text with proper padding
+                            let text_rect = content_rect.shrink(20.0);
+                            ui.put(text_rect, egui::Label::new(&page_data.text).wrap(true));
+                        } else {
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(50.0);
+                                ui.label("Loading page content...");
+                                ui.add_space(50.0);
+                            });
+                        }
+                    });
+            } else if self.loading {
+                // Show loading indicator
+                ui.vertical_centered(|ui| {
+                    ui.add_space(100.0);
+                    ui.label("Loading PDF...");
+                    ui.add_space(100.0);
+                });
+            } else {
+                // Show welcome screen when no document is loaded
+                ui.vertical_centered(|ui| {
+                    ui.add_space(100.0);
+                    ui.heading("Welcome to PDFScan");
+                    ui.add_space(20.0);
+                    ui.label("To get started, open a PDF document.");
+                    ui.add_space(20.0);
+                    if ui.button("📂 Open PDF...").clicked() {
+                        if let Some(path) = Self::open_file_dialog() {
+                            self.load_pdf(&path);
+                        }
                     }
-                }
-            });
-        }
+                    ui.add_space(100.0);
+                });
+            }
+        });
     }
     
     /// Show the document outline in the sidebar
