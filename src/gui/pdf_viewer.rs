@@ -1,18 +1,19 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use std::convert::TryFrom;
 
 use egui::{Context, Ui, Vec2, RichText, Color32, TextureHandle};
 use lopdf::Document;
-use poppler::Document as PopplerDocument;
 use image::{ImageBuffer, Rgba};
-use poppler::Page;
+use pdfium_render::prelude::*;
 
-/// PDF viewer component
+/// PDF viewer component that renders PDFs using Pdfium
 pub struct PdfViewer {
     current_pdf_path: Option<PathBuf>,
     document: Option<Arc<Document>>,
-    poppler_document: Option<Arc<PopplerDocument>>,
+    pdfium: Option<Pdfium>,
+    pdfium_document: Option<Arc<PdfDocumentWrapper>>,
     current_page: usize,
     total_pages: usize,
     zoom: f32,
@@ -27,6 +28,15 @@ pub struct PdfViewer {
     show_text_panel: bool,
     view_mode: ViewMode,
 }
+
+/// Wrapper around PdfDocument to make it shareable between threads
+struct PdfDocumentWrapper {
+    document: PdfDocument<'static>,
+}
+
+// This is safe because Pdfium handles its own thread safety
+unsafe impl Send for PdfDocumentWrapper {}
+unsafe impl Sync for PdfDocumentWrapper {}
 
 /// View modes for the PDF viewer
 #[derive(PartialEq, Clone, Copy)]
@@ -51,10 +61,23 @@ struct OutlineItem {
 
 impl PdfViewer {
     pub fn new() -> Self {
+        // Try to initialize pdfium once at startup
+        let pdfium = match Pdfium::bind_to_system_library() {
+            Ok(bindings) => {
+                println!("Successfully initialized Pdfium");
+                Some(Pdfium::new(bindings))
+            },
+            Err(err) => {
+                eprintln!("Failed to initialize Pdfium: {}", err);
+                None
+            }
+        };
+
         Self {
             current_pdf_path: None,
             document: None,
-            poppler_document: None,
+            pdfium,
+            pdfium_document: None,
             current_page: 0,
             total_pages: 0,
             zoom: 1.0,
@@ -83,7 +106,7 @@ impl PdfViewer {
         
         // Reset state
         self.document = None;
-        self.poppler_document = None;
+        self.pdfium_document = None;
         self.current_page = 0;
         self.total_pages = 0;
         self.pages.clear();
@@ -92,33 +115,27 @@ impl PdfViewer {
         
         // Load the PDF in a separate thread
         std::thread::spawn(move || {
-            // Load with lopdf for structure parsing
+            // Load with lopdf for structure parsing (optional, for compatibility)
             let lopdf_result = Document::load(&path_clone);
             
-            // Load with Poppler for rendering
-            // No need to handle Poppler document here as we'll do it in process_loaded_document
-            
-            match lopdf_result {
-                Ok(document) => {
-                    // Extract text for search and analysis
-                    match extract_text_from_pdf(&path_clone) {
-                        Ok(text) => {
-                            let mut text_data = text_data.lock().unwrap();
-                            *text_data = text;
-                        },
-                        Err(e) => {
-                            eprintln!("Error extracting text: {}", e);
-                        }
-                    }
-                    
-                    // Store the loaded document in the shared mutex
-                    let doc = Arc::new(document);
-                    let mut document_loaded = document_loaded.lock().unwrap();
-                    *document_loaded = Some(doc);
+            // Extract text for search and analysis
+            match extract_text_from_pdf(&path_clone) {
+                Ok(text) => {
+                    let mut text_data = text_data.lock().unwrap();
+                    *text_data = text;
                 },
                 Err(e) => {
-                    eprintln!("Error loading PDF with lopdf: {}", e);
+                    eprintln!("Error extracting text: {}", e);
                 }
+            }
+            
+            if let Ok(document) = lopdf_result {
+                // Store the loaded document in the shared mutex
+                let doc = Arc::new(document);
+                let mut document_loaded = document_loaded.lock().unwrap();
+                *document_loaded = Some(doc);
+            } else {
+                eprintln!("Error loading PDF with lopdf (optional)");
             }
         });
     }
@@ -136,53 +153,48 @@ impl PdfViewer {
                 // Update state with the loaded document
                 self.document = Some(doc.clone());
                 
-                // Try to load the document with Poppler for rendering
+                // Try to load the document with Pdfium for rendering
                 if let Some(path) = &self.current_pdf_path {
-                    // Convert path to a properly encoded file URI
-                    // First get absolute path
-                    let absolute_path = if path.is_absolute() {
-                        path.clone()
-                    } else {
-                        std::env::current_dir().unwrap_or_default().join(path)
-                    };
-                    
-                    // Then convert to URI with proper escaping
-                    let path_str = absolute_path.to_string_lossy();
-                    let file_uri = if cfg!(windows) {
-                        // Windows paths need special handling
-                        format!("file:///{}", path_str.replace('\\', "/"))
-                    } else {
-                        // Unix paths just need the scheme prefix
-                        format!("file://{}", path_str)
-                    };
-                    
-                    match PopplerDocument::from_file(
-                        &file_uri,
-                        None, // No password
-                    ) {
-                        Ok(poppler_doc) => {
-                            // Get the number of pages from Poppler and convert from i32 to usize
-                            self.total_pages = poppler_doc.n_pages() as usize;
-                            
-                            // Store Poppler document for rendering
-                            self.poppler_document = Some(Arc::new(poppler_doc));
-                            
-                            // Render the first page
-                            self.render_page(0, ctx);
-                        },
-                        Err(e) => {
-                            eprintln!("Error loading PDF with Poppler in main thread: {:?}", e);
-                            
-                            // Fallback to lopdf for page count
-                            if let Some(doc) = &self.document {
-                                self.total_pages = doc.get_pages().len();
+                    if let Some(pdfium) = &self.pdfium {
+                        match pdfium.load_pdf_from_file(path, None) {
+                            Ok(pdfium_doc) => {
+                                // Get the number of pages
+                                self.total_pages = pdfium_doc.pages().len() as usize;
+                                
+                                // Try to extract title from document information
+                                if let Ok(info) = pdfium_doc.document_info() {
+                                    if let Ok(Some(title)) = info.title() {
+                                        if !title.is_empty() {
+                                            self.document_title = title;
+                                        }
+                                    }
+                                }
+                                
+                                // Store document for rendering
+                                // We need to use a nasty trick to convert lifetimes
+                                let document: PdfDocument<'static> = unsafe { 
+                                    std::mem::transmute(pdfium_doc) 
+                                };
+                                self.pdfium_document = Some(Arc::new(PdfDocumentWrapper { document }));
+                                
+                                // Render the first page
+                                self.render_page(0, ctx);
+                            },
+                            Err(e) => {
+                                eprintln!("Error loading PDF with Pdfium: {:?}", e);
+                                // Fallback to lopdf for page count
+                                if let Some(doc) = &self.document {
+                                    self.total_pages = doc.get_pages().len();
+                                }
                             }
                         }
+                    } else {
+                        eprintln!("Pdfium library not initialized");
                     }
                 }
                 
                 // Load first page text
-                self.load_page_text(0);
+                self.extract_page_text(0);
                 
                 // Document loading complete
                 self.loading = false;
@@ -190,98 +202,191 @@ impl PdfViewer {
         }
     }
     
-    /// Render a PDF page using Poppler
+    /// Render a PDF page using Pdfium
     fn render_page(&mut self, page_num: usize, ctx: &Context) {
         // Check if we already have this page texture
         if self.page_textures.contains_key(&page_num) {
             return;
         }
         
-        if let Some(poppler_doc) = &self.poppler_document {
-            // Get the page - convert usize to i32 for the Poppler API
-            if let Some(page) = poppler_doc.page(page_num as i32) {
-                // Get page dimensions
-                let (width, height) = page.size();
-                
-                // Create an image buffer at a reasonable resolution
-                let scale = 2.0;  // Scaling factor for better resolution
-                let width_px = (width * scale) as u32;
-                let height_px = (height * scale) as u32;
-                
-                // Create a new image buffer with white background
-                let mut img = ImageBuffer::<Rgba<u8>, Vec<u8>>::new(width_px, height_px);
-                for pixel in img.pixels_mut() {
-                    *pixel = Rgba([255, 255, 255, 255]);
+        if let Some(pdfium_doc) = &self.pdfium_document {
+            // Convert usize to u16 for pdfium's page index
+            let page_index = match u16::try_from(page_num) {
+                Ok(index) => index,
+                Err(_) => {
+                    eprintln!("Page number too large: {}", page_num);
+                    self.render_fallback_page(page_num, ctx);
+                    return;
                 }
-                
-                // Render the PDF page to our image buffer
-                // Create a blank white image with page dimensions
-                for x in 0..width_px {
-                    for y in 0..height_px {
-                        img.put_pixel(x, y, Rgba([255, 255, 255, 255]));
-                    }
-                }
-
-                // Draw a gray border around the page
-                for x in 0..width_px {
-                    // Top and bottom border
-                    img.put_pixel(x, 0, Rgba([200, 200, 200, 255]));
-                    img.put_pixel(x, height_px - 1, Rgba([200, 200, 200, 255]));
-                }
-                
-                for y in 0..height_px {
-                    // Left and right border
-                    img.put_pixel(0, y, Rgba([200, 200, 200, 255]));
-                    img.put_pixel(width_px - 1, y, Rgba([200, 200, 200, 255]));
-                }
-                
-                // Draw a placeholder text indicator
-                let has_text = page.text().is_some_and(|t| !t.is_empty());
-                
-                // Draw a visual indicator in the middle of the page
-                // For now, we'll just draw a colored rectangle to indicate if text is available
-                let indicator_color = if has_text {
-                    Rgba([0, 150, 0, 255]) // Green if text is available
-                } else {
-                    Rgba([150, 0, 0, 255]) // Red if no text
-                };
-                
-                // Draw an indicator in the middle
-                let indicator_size = width_px.min(height_px) / 10;
-                let start_x = width_px / 2 - indicator_size / 2;
-                let start_y = height_px / 2 - indicator_size / 2;
-                
-                for x in start_x..(start_x + indicator_size) {
-                    for y in start_y..(start_y + indicator_size) {
-                        if x < width_px && y < height_px {
-                            img.put_pixel(x, y, indicator_color);
+            };
+            
+            // Get the page with error handling
+            let page_result = pdfium_doc.document.pages().get(page_index);
+            
+            match page_result {
+                Ok(page) => {
+                    let result = std::panic::catch_unwind(|| {
+                        // Get page dimensions (in points)
+                        let width_points = page.width();
+                        let height_points = page.height();
+                        
+                        // Create an image buffer at a reasonable resolution
+                        let scale = 2.0;  // Scaling factor for better resolution
+                        let width_px = (width_points.value * scale) as i32;
+                        let height_px = (height_points.value * scale) as i32;
+                        
+                        // Create a new image buffer with white background
+                        let mut img = ImageBuffer::<Rgba<u8>, Vec<u8>>::new(
+                            width_px as u32, 
+                            height_px as u32
+                        );
+                        for pixel in img.pixels_mut() {
+                            *pixel = Rgba([255, 255, 255, 255]);
                         }
+                        
+                        // Render the page to a bitmap
+                        let config = PdfRenderConfig::new()
+                            .set_target_width(width_px)
+                            .set_target_height(height_px);
+                            
+                        match page.render_with_config(&config) {
+                            Ok(bitmap) => {
+                                // Get the bitmap data
+                                let bitmap_data = bitmap.as_raw_rgba8();
+                                
+                                // Copy bitmap data to our image buffer
+                                for y in 0..height_px as u32 {
+                                    for x in 0..width_px as u32 {
+                                        if x < bitmap_data.width() && y < bitmap_data.height() {
+                                            let idx = (y * bitmap_data.width() + x) as usize * 4;
+                                            
+                                            if idx + 3 < bitmap_data.data().len() {
+                                                let r = bitmap_data.data()[idx];
+                                                let g = bitmap_data.data()[idx + 1];
+                                                let b = bitmap_data.data()[idx + 2];
+                                                let a = bitmap_data.data()[idx + 3];
+                                                
+                                                img.put_pixel(x, y, Rgba([r, g, b, a]));
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Convert to egui texture
+                                let size = [width_px as usize, height_px as usize];
+                                let pixels = img.into_raw();
+                                
+                                let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                                    size,
+                                    &pixels
+                                );
+                                
+                                // Load as texture
+                                let texture = ctx.load_texture(
+                                    format!("pdf_page_{}", page_num),
+                                    color_image,
+                                    egui::TextureOptions::default()
+                                );
+                                
+                                Some((texture, Vec2::new(width_points.value as f32, height_points.value as f32)))
+                            },
+                            Err(e) => {
+                                eprintln!("Error rendering page: {:?}", e);
+                                None
+                            }
+                        }
+                    });
+                    
+                    if let Ok(Some((texture, size))) = result {
+                        // Store texture for reuse
+                        self.page_textures.insert(page_num, texture);
+                        
+                        // Also extract text for this page
+                        let mut page_text = String::new();
+                        
+                        // Try to extract text from the page
+                        if let Ok(page_text_obj) = page.text() {
+                            // Get text from the page
+                            page_text = page_text_obj.to_string();
+                        }
+                        
+                        // Store page data with text and size
+                        self.pages.insert(page_num, PageData { 
+                            text: page_text, 
+                            size,
+                        });
+                    } else {
+                        self.render_fallback_page(page_num, ctx);
                     }
+                },
+                Err(e) => {
+                    eprintln!("Error getting page {}: {:?}", page_num, e);
+                    self.render_fallback_page(page_num, ctx);
                 }
-                
-                // Convert to egui texture
-                let size = [width_px as usize, height_px as usize];
-                let pixels = img.into_raw();
-                
-                let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                    size,
-                    &pixels
-                );
-                
-                // Load as texture
-                let texture = ctx.load_texture(
-                    format!("pdf_page_{}", page_num),
-                    color_image,
-                    egui::TextureOptions::default()
-                );
-                
-                // Store texture for reuse
-                self.page_textures.insert(page_num, texture);
-                
-                // Also extract text for this page specifically and store in page_data
-                self.extract_page_text(page_num);
+            }
+        } else {
+            self.render_fallback_page(page_num, ctx);
+        }
+    }
+
+    /// Render a fallback page when Pdfium rendering fails
+    fn render_fallback_page(&mut self, page_num: usize, ctx: &Context) {
+        // Create a simple placeholder page
+        let width_px = 612;  // Standard letter width in pixels at 72 DPI
+        let height_px = 792; // Standard letter height
+        
+        let mut img = ImageBuffer::<Rgba<u8>, Vec<u8>>::new(width_px, height_px);
+        
+        // Fill with white background
+        for x in 0..width_px {
+            for y in 0..height_px {
+                img.put_pixel(x, y, Rgba([255, 255, 255, 255]));
             }
         }
+        
+        // Draw a gray border
+        for x in 0..width_px {
+            img.put_pixel(x, 0, Rgba([200, 200, 200, 255]));
+            img.put_pixel(x, height_px - 1, Rgba([200, 200, 200, 255]));
+        }
+        
+        for y in 0..height_px {
+            img.put_pixel(0, y, Rgba([200, 200, 200, 255]));
+            img.put_pixel(width_px - 1, y, Rgba([200, 200, 200, 255]));
+        }
+        
+        // Draw a colored rectangle in the middle to indicate status
+        let rect_size = width_px.min(height_px) / 10;
+        let start_x = width_px / 2 - rect_size / 2;
+        let start_y = height_px / 2 - rect_size / 2;
+        
+        for x in start_x..(start_x + rect_size) {
+            for y in start_y..(start_y + rect_size) {
+                img.put_pixel(x, y, Rgba([200, 100, 100, 255]));
+            }
+        }
+        
+        // Convert to egui texture
+        let size = [width_px as usize, height_px as usize];
+        let pixels = img.into_raw();
+        
+        let color_image = egui::ColorImage::from_rgba_unmultiplied(
+            size,
+            &pixels
+        );
+        
+        // Load as texture
+        let texture = ctx.load_texture(
+            format!("pdf_page_{}", page_num),
+            color_image,
+            egui::TextureOptions::default()
+        );
+        
+        // Store texture for reuse
+        self.page_textures.insert(page_num, texture);
+        
+        // Extract text if needed
+        self.extract_page_text(page_num);
     }
     
     /// Extract text from a specific page
@@ -290,81 +395,59 @@ impl PdfViewer {
             return; // Already loaded
         }
         
-        if let Some(poppler_doc) = &self.poppler_document {
-            if let Some(page) = poppler_doc.page(page_num as i32) {
-                // Get page dimensions for storing
-                let (width, height) = page.size();
-                let size = Vec2::new(width as f32, height as f32);
-                
-                // Extract text from the page - page.text() returns Option<GString>, not Result
-                let text = match page.text() {
-                    Some(text) => text.to_string(),
-                    None => {
-                        eprintln!("No text found on page {}", page_num + 1);
-                        String::new()
+        // First try to get text from Pdfium
+        if let Some(pdfium_doc) = &self.pdfium_document {
+            // Convert usize to u16 for pdfium's page index
+            if let Ok(page_index) = u16::try_from(page_num) {
+                if let Ok(page) = pdfium_doc.document.pages().get(page_index) {
+                    let mut page_text = String::new();
+                    
+                    // Try to extract text from the page
+                    if let Ok(page_text_obj) = page.text() {
+                        // Get text from the page
+                        page_text = page_text_obj.to_string();
                     }
-                };
-                
-                // Store in page data
-                self.pages.insert(page_num, PageData { text, size });
-            } else {
-                // Create empty page data as fallback
-                let size = Vec2::new(612.0, 792.0); // Letter size
-                self.pages.insert(page_num, PageData { 
-                    text: format!("Error loading page {} content", page_num + 1),
-                    size 
-                });
-            }
-        } else {
-            // Legacy code for when poppler isn't available - use the global text
-            // This is a fallback that puts all text on first page and generic 
-            // messages on other pages
-            let size = Vec2::new(612.0, 792.0); // Letter size
-            
-            if page_num == 0 {
-                // For the first page, use all the extracted text
-                let text = {
-                    let text_data = self.text_data.lock().unwrap();
-                    text_data.clone()
-                };
-                self.pages.insert(page_num, PageData { text, size });
-            } else {
-                // For other pages, just add a placeholder
-                self.pages.insert(page_num, PageData { 
-                    text: format!("Page {} content", page_num + 1),
-                    size 
-                });
+                    
+                    let width_points = page.width();
+                    let height_points = page.height();
+                    let size = Vec2::new(width_points.value as f32, height_points.value as f32);
+                    
+                    // Store in page data
+                    self.pages.insert(page_num, PageData { text: page_text, size });
+                    return;
+                }
             }
         }
+        
+        // Fallback to our loaded text data
+        self.load_page_text(page_num);
     }
     
-    /// Load page text content (fallback for when Poppler isn't available)
+    /// Load page text content (fallback for when Pdfium extraction fails)
     fn load_page_text(&mut self, page_num: usize) {
-        // If we already have page data or Poppler is available (which handles text extraction), skip
-        if self.pages.contains_key(&page_num) || self.poppler_document.is_some() {
+        // If we already have page data, skip
+        if self.pages.contains_key(&page_num) {
             return;
         }
         
-        if let Some(doc) = &self.document {
-            // Default page size
-            let size = Vec2::new(612.0, 792.0); // Letter size
-            
-            // Get text content (from the already extracted text)
-            let text = {
-                let text_data = self.text_data.lock().unwrap();
-                text_data.clone()
-            };
-            
-            // For a real implementation, we'd extract text for the specific page
-            // For now, we'll just show all the text on the first page (fallback method)
-            if page_num == 0 {
-                self.pages.insert(page_num, PageData { text, size });
-            } else {
-                self.pages.insert(page_num, PageData { 
-                    text: format!("Page {} content", page_num + 1),
-                    size 
-                });
-            }
+        // Default page size
+        let size = Vec2::new(612.0, 792.0); // Letter size
+        
+        // Get text content (from the already extracted text)
+        let text = {
+            let text_data = self.text_data.lock().unwrap();
+            text_data.clone()
+        };
+        
+        // For a real implementation, we'd extract text for the specific page
+        // For now, we'll just show all the text on the first page (fallback method)
+        if page_num == 0 {
+            self.pages.insert(page_num, PageData { text, size });
+        } else {
+            self.pages.insert(page_num, PageData { 
+                text: format!("Page {} content", page_num + 1),
+                size 
+            });
         }
     }
     
@@ -415,10 +498,10 @@ impl PdfViewer {
                         if ui.add_enabled(self.current_page > 0, egui::Button::new("◀ Previous")).clicked() {
                             self.current_page = self.current_page.saturating_sub(1);
                             // Pre-render the page (will be cached if already rendered)
-                            if self.view_mode == ViewMode::Rendered && self.poppler_document.is_some() {
+                            if self.view_mode == ViewMode::Rendered {
                                 self.render_page(self.current_page, ctx);
                             } else {
-                                self.load_page_text(self.current_page);
+                                self.extract_page_text(self.current_page);
                             }
                         }
                         
@@ -429,10 +512,10 @@ impl PdfViewer {
                                         egui::Button::new("Next ▶")).clicked() {
                             self.current_page = (self.current_page + 1).min(self.total_pages.saturating_sub(1));
                             // Pre-render the page (will be cached if already rendered)
-                            if self.view_mode == ViewMode::Rendered && self.poppler_document.is_some() {
+                            if self.view_mode == ViewMode::Rendered {
                                 self.render_page(self.current_page, ctx);
                             } else {
-                                self.load_page_text(self.current_page);
+                                self.extract_page_text(self.current_page);
                             }
                         }
                         
@@ -462,9 +545,7 @@ impl PdfViewer {
                         if ui.radio(self.view_mode == ViewMode::Rendered, "Rendered").clicked() {
                             self.view_mode = ViewMode::Rendered;
                             // Ensure the current page is rendered
-                            if self.poppler_document.is_some() {
-                                self.render_page(self.current_page, ctx);
-                            }
+                            self.render_page(self.current_page, ctx);
                         }
                         if ui.radio(self.view_mode == ViewMode::TextOnly, "Text Only").clicked() {
                             self.view_mode = ViewMode::TextOnly;
@@ -477,7 +558,7 @@ impl PdfViewer {
                 });
             
             // Main content area for the PDF
-            if let Some(_doc) = &self.document {
+            if self.document.is_some() || self.pdfium_document.is_some() {
                 match self.view_mode {
                     ViewMode::Rendered => {
                         if self.show_text_panel {
@@ -526,90 +607,13 @@ impl PdfViewer {
                                         });
                                     } else {
                                         // Render the page if not available
-                                        if self.poppler_document.is_some() {
-                                            self.render_page(self.current_page, ctx);
-                                            
-                                            ui.vertical_centered(|ui| {
-                                                ui.add_space(50.0);
-                                                ui.label("Rendering page...");
-                                                ui.add_space(50.0);
-                                            });
-                                        } else {
-                                            // Fallback to painter-based rendering if Poppler isn't available
-                                            if let Some(page_data) = self.pages.get(&self.current_page) {
-                                                // Calculate content size with zoom
-                                                let width = 612.0 * self.zoom;  // Standard letter width
-                                                let height = 792.0 * self.zoom; // Standard letter height
-                                                
-                                                // Allocate space for the page
-                                                let (response, painter) = ui.allocate_painter(
-                                                    Vec2::new(width, height),
-                                                    egui::Sense::hover()
-                                                );
-                                                
-                                                let rect = response.rect;
-                                                
-                                                // Draw the page background
-                                                painter.rect_filled(rect, 0.0, Color32::WHITE);
-                                                painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0, Color32::GRAY));
-                                                
-                                                // Add a header with page number
-                                                let header_rect = egui::Rect::from_min_max(
-                                                    rect.min,
-                                                    egui::pos2(rect.max.x, rect.min.y + 40.0 * self.zoom)
-                                                );
-                                                painter.rect_filled(header_rect, 0.0, Color32::from_rgb(240, 240, 240));
-                                                
-                                                // Page number text
-                                                painter.text(
-                                                    egui::pos2(rect.center().x, header_rect.center().y),
-                                                    egui::Align2::CENTER_CENTER,
-                                                    format!("Page {} of {}", self.current_page + 1, self.total_pages),
-                                                    egui::FontId::proportional(16.0 * self.zoom),
-                                                    Color32::BLACK
-                                                );
-                                                
-                                                // Draw content area
-                                                let content_rect = egui::Rect::from_min_max(
-                                                    egui::pos2(rect.min.x + 50.0 * self.zoom, header_rect.max.y + 20.0 * self.zoom),
-                                                    egui::pos2(rect.max.x - 50.0 * self.zoom, rect.max.y - 50.0 * self.zoom)
-                                                );
-                                                
-                                                // Draw text content
-                                                if !page_data.text.is_empty() {
-                                                    let font_size = 14.0 * self.zoom;
-                                                    let line_height = font_size * 1.5;
-                                                    let mut y_offset = content_rect.min.y;
-                                                    
-                                                    // Simple text rendering
-                                                    painter.text(
-                                                        egui::pos2(content_rect.min.x, y_offset),
-                                                        egui::Align2::LEFT_TOP,
-                                                        &page_data.text,
-                                                        egui::FontId::proportional(font_size),
-                                                        Color32::BLACK
-                                                    );
-                                                } else {
-                                                    // No text available
-                                                    painter.text(
-                                                        content_rect.center(),
-                                                        egui::Align2::CENTER_CENTER,
-                                                        "No text content available",
-                                                        egui::FontId::proportional(16.0 * self.zoom),
-                                                        Color32::DARK_GRAY
-                                                    );
-                                                }
-                                            } else {
-                                                // Load page data if not available
-                                                self.load_page_text(self.current_page);
-                                                
-                                                ui.vertical_centered(|ui| {
-                                                    ui.add_space(50.0);
-                                                    ui.label("Rendering page...");
-                                                    ui.add_space(50.0);
-                                                });
-                                            }
-                                        }
+                                        self.render_page(self.current_page, ctx);
+                                        
+                                        ui.vertical_centered(|ui| {
+                                            ui.add_space(50.0);
+                                            ui.label("Rendering page...");
+                                            ui.add_space(50.0);
+                                        });
                                     }
                                 });
                         });
@@ -680,9 +684,6 @@ impl PdfViewer {
                                             }
                                         } else {
                                             ui.put(text_rect, egui::Label::new("No text content available"));
-                                            ui.vertical_centered(|ui| {
-                                                ui.label("No text content available");
-                                            });
                                         }
                                     } else {
                                         ui.vertical_centered(|ui| {
@@ -769,9 +770,8 @@ impl PdfViewer {
     }
 }
 
-/// Extract text from a PDF file
+/// Extract text from a PDF file using the pdf-extract library
 fn extract_text_from_pdf(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
-    // Use the extract module to get the text
     let bytes = std::fs::read(path)?;
     let text = pdf_extract::extract_text_from_mem(&bytes)?;
     Ok(text)

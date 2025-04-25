@@ -14,9 +14,8 @@ indicatif = "0.17.8"
 dirs = "5.0.1"
 zip = "0.6.6"
 chrono = "0.4.35"
-lopdf = "0.31.0"  # Used for basic PDF manipulation, consider adding a better PDF rendering library for production
-                  # Alternatives: pdf_render, printpdf, mupdf-rs, etc.
-poppler-rs = { version = "0.24.1", features = ["v22_2"] }  # Using a more stable feature version
+lopdf = "0.31.0"  # Used for basic PDF manipulation
+pdfium-render = "0.8.30"  # High-quality PDF rendering library backed by Google's Pdfium
 
 # UI dependencies
 eframe = "0.26.2"
