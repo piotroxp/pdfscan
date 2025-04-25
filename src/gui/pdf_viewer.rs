@@ -2,8 +2,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 
-use egui::{Context, Ui, Vec2, ScrollArea, RichText, Color32};
+use egui::{Context, Ui, Vec2, ScrollArea, RichText, Color32, TextureHandle};
 use lopdf::{Document, Object};
+use poppler_rs::{PopplerDocument, PopplerPage, PopplerError};
+use image::{ImageBuffer, Rgba};
 
 use crate::extract;
 
@@ -11,10 +13,12 @@ use crate::extract;
 pub struct PdfViewer {
     current_pdf_path: Option<PathBuf>,
     document: Option<Arc<Document>>,
+    poppler_document: Option<Arc<PopplerDocument>>,
     current_page: usize,
     total_pages: usize,
     zoom: f32,
     pages: HashMap<usize, PageData>,
+    page_textures: HashMap<usize, TextureHandle>,
     document_title: String,
     outline: Vec<OutlineItem>,
     text_data: Arc<Mutex<String>>,
@@ -51,10 +55,12 @@ impl PdfViewer {
         Self {
             current_pdf_path: None,
             document: None,
+            poppler_document: None,
             current_page: 0,
             total_pages: 0,
             zoom: 1.0,
             pages: HashMap::new(),
+            page_textures: HashMap::new(),
             document_title: String::new(),
             outline: Vec::new(),
             text_data: Arc::new(Mutex::new(String::new())),
@@ -78,19 +84,30 @@ impl PdfViewer {
         
         // Reset state
         self.document = None;
+        self.poppler_document = None;
         self.current_page = 0;
         self.total_pages = 0;
         self.pages.clear();
+        self.page_textures.clear();
         self.document_title = path.file_name().unwrap_or_default().to_string_lossy().to_string();
         
         // Load the PDF in a separate thread
         std::thread::spawn(move || {
-            match Document::load(&path_clone) {
-                Ok(document) => {
-                    // Get the number of pages
-                    let page_count = document.get_pages().len();
+            // Load with lopdf for structure parsing
+            let lopdf_result = Document::load(&path_clone);
+            
+            // Load with Poppler for rendering
+            let poppler_result = PopplerDocument::new_from_file(
+                path_clone.to_str().unwrap_or_default(),
+                None, // No password
+            );
+            
+            match (lopdf_result, poppler_result) {
+                (Ok(document), Ok(poppler_doc)) => {
+                    // Get the number of pages from Poppler
+                    let page_count = poppler_doc.get_n_pages();
                     
-                    // Extract text
+                    // Extract text for search and analysis
                     match extract_text_from_pdf(&path_clone) {
                         Ok(text) => {
                             let mut text_data = text_data.lock().unwrap();
@@ -105,9 +122,15 @@ impl PdfViewer {
                     let doc = Arc::new(document);
                     let mut document_loaded = document_loaded.lock().unwrap();
                     *document_loaded = Some(doc);
+                    
+                    // Return poppler document as well (we'll handle this in process_loaded_document)
+                    // For now we just return the lopdf document
                 },
-                Err(e) => {
-                    eprintln!("Error loading PDF: {}", e);
+                (_, Err(e)) => {
+                    eprintln!("Error loading PDF with Poppler: {:?}", e);
+                },
+                (Err(e), _) => {
+                    eprintln!("Error loading PDF with lopdf: {}", e);
                 }
             }
         });
@@ -126,10 +149,34 @@ impl PdfViewer {
                 // Update state with the loaded document
                 self.document = Some(doc.clone());
                 
-                // Get the number of pages from the document
-                self.total_pages = doc.get_pages().len();
+                // Try to load the document with Poppler for rendering
+                if let Some(path) = &self.current_pdf_path {
+                    match PopplerDocument::new_from_file(
+                        path.to_str().unwrap_or_default(),
+                        None, // No password
+                    ) {
+                        Ok(poppler_doc) => {
+                            // Get the number of pages from Poppler
+                            self.total_pages = poppler_doc.get_n_pages();
+                            
+                            // Store Poppler document for rendering
+                            self.poppler_document = Some(Arc::new(poppler_doc));
+                            
+                            // Render the first page
+                            self.render_page(0, ctx);
+                        },
+                        Err(e) => {
+                            eprintln!("Error loading PDF with Poppler in main thread: {:?}", e);
+                            
+                            // Fallback to lopdf for page count
+                            if let Some(doc) = &self.document {
+                                self.total_pages = doc.get_pages().len();
+                            }
+                        }
+                    }
+                }
                 
-                // Load first page
+                // Load first page text
                 self.load_page_text(0);
                 
                 // Document loading complete
@@ -138,13 +185,131 @@ impl PdfViewer {
         }
     }
     
-    /// Load page text content
-    fn load_page_text(&mut self, page_num: usize) {
-        if let Some(doc) = &self.document {
-            if self.pages.contains_key(&page_num) {
-                return; // Already loaded
+    /// Render a PDF page using Poppler
+    fn render_page(&mut self, page_num: usize, ctx: &Context) {
+        // Check if we already have this page texture
+        if self.page_textures.contains_key(&page_num) {
+            return;
+        }
+        
+        if let Some(poppler_doc) = &self.poppler_document {
+            // Get the page
+            if let Some(page) = poppler_doc.get_page(page_num) {
+                // Get page dimensions
+                let (width, height) = page.get_size();
+                
+                // Create an image buffer at a reasonable resolution
+                let scale = 2.0;  // Scaling factor for better resolution
+                let width_px = (width * scale) as u32;
+                let height_px = (height * scale) as u32;
+                
+                let mut img = ImageBuffer::<Rgba<u8>, Vec<u8>>::new(width_px, height_px);
+                
+                // Fill with white background
+                for pixel in img.pixels_mut() {
+                    *pixel = Rgba([255, 255, 255, 255]);
+                }
+                
+                // Render the page to the image buffer
+                if let Err(e) = page.render_to_image(
+                    &mut img, 
+                    0, 0, 
+                    width_px, height_px, 
+                    scale as f64, scale as f64
+                ) {
+                    eprintln!("Error rendering page {}: {:?}", page_num, e);
+                    
+                    // Draw error message in the image
+                    // This would need image drawing code which we'll omit for simplicity
+                }
+                
+                // Convert to egui texture
+                let size = [width_px as usize, height_px as usize];
+                let pixels = img.into_raw();
+                
+                let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                    size,
+                    &pixels
+                );
+                
+                // Load as texture
+                let texture = ctx.load_texture(
+                    format!("pdf_page_{}", page_num),
+                    color_image,
+                    egui::TextureOptions::default()
+                );
+                
+                // Store texture for reuse
+                self.page_textures.insert(page_num, texture);
+                
+                // Also extract text for this page specifically and store in page_data
+                self.extract_page_text(page_num);
             }
+        }
+    }
+    
+    /// Extract text from a specific page
+    fn extract_page_text(&mut self, page_num: usize) {
+        if self.pages.contains_key(&page_num) {
+            return; // Already loaded
+        }
+        
+        if let Some(poppler_doc) = &self.poppler_document {
+            if let Some(page) = poppler_doc.get_page(page_num) {
+                // Get page dimensions for storing
+                let (width, height) = page.get_size();
+                let size = Vec2::new(width as f32, height as f32);
+                
+                // Extract text from the page
+                let text = match page.get_text() {
+                    Ok(text) => text,
+                    Err(e) => {
+                        eprintln!("Error extracting text from page {}: {:?}", page_num, e);
+                        String::new()
+                    }
+                };
+                
+                // Store in page data
+                self.pages.insert(page_num, PageData { text, size });
+            } else {
+                // Create empty page data as fallback
+                let size = Vec2::new(612.0, 792.0); // Letter size
+                self.pages.insert(page_num, PageData { 
+                    text: format!("Error loading page {} content", page_num + 1),
+                    size 
+                });
+            }
+        } else {
+            // Legacy code for when poppler isn't available - use the global text
+            // This is a fallback that puts all text on first page and generic 
+            // messages on other pages
+            let size = Vec2::new(612.0, 792.0); // Letter size
             
+            if page_num == 0 {
+                // For the first page, use all the extracted text
+                let text = {
+                    let text_data = self.text_data.lock().unwrap();
+                    text_data.clone()
+                };
+                self.pages.insert(page_num, PageData { text, size });
+            } else {
+                // For other pages, just add a placeholder
+                self.pages.insert(page_num, PageData { 
+                    text: format!("Page {} content", page_num + 1),
+                    size 
+                });
+            }
+        }
+    }
+    
+    /// Load page text content (fallback for when Poppler isn't available)
+    fn load_page_text(&mut self, page_num: usize) {
+        // If we already have page data or Poppler is available (which handles text extraction), skip
+        if self.pages.contains_key(&page_num) || self.poppler_document.is_some() {
+            return;
+        }
+        
+        if let Some(doc) = &self.document {
             // Default page size
             let size = Vec2::new(612.0, 792.0); // Letter size
             
@@ -155,7 +320,7 @@ impl PdfViewer {
             };
             
             // For a real implementation, we'd extract text for the specific page
-            // For now, we'll just show all the text on the first page
+            // For now, we'll just show all the text on the first page (fallback method)
             if page_num == 0 {
                 self.pages.insert(page_num, PageData { text, size });
             } else {
@@ -213,7 +378,12 @@ impl PdfViewer {
                         // Page navigation
                         if ui.add_enabled(self.current_page > 0, egui::Button::new("◀ Previous")).clicked() {
                             self.current_page = self.current_page.saturating_sub(1);
-                            self.load_page_text(self.current_page);
+                            // Pre-render the page (will be cached if already rendered)
+                            if self.view_mode == ViewMode::Rendered && self.poppler_document.is_some() {
+                                self.render_page(self.current_page, ctx);
+                            } else {
+                                self.load_page_text(self.current_page);
+                            }
                         }
                         
                         let total_pages = self.total_pages.max(1);
@@ -222,7 +392,12 @@ impl PdfViewer {
                         if ui.add_enabled(self.current_page < self.total_pages.saturating_sub(1), 
                                         egui::Button::new("Next ▶")).clicked() {
                             self.current_page = (self.current_page + 1).min(self.total_pages.saturating_sub(1));
-                            self.load_page_text(self.current_page);
+                            // Pre-render the page (will be cached if already rendered)
+                            if self.view_mode == ViewMode::Rendered && self.poppler_document.is_some() {
+                                self.render_page(self.current_page, ctx);
+                            } else {
+                                self.load_page_text(self.current_page);
+                            }
                         }
                         
                         // Zoom controls
@@ -250,9 +425,17 @@ impl PdfViewer {
                         ui.label("View:");
                         if ui.radio(self.view_mode == ViewMode::Rendered, "Rendered").clicked() {
                             self.view_mode = ViewMode::Rendered;
+                            // Ensure the current page is rendered
+                            if self.poppler_document.is_some() {
+                                self.render_page(self.current_page, ctx);
+                            }
                         }
                         if ui.radio(self.view_mode == ViewMode::TextOnly, "Text Only").clicked() {
                             self.view_mode = ViewMode::TextOnly;
+                            // Ensure we have the text content loaded
+                            if !self.pages.contains_key(&self.current_page) {
+                                self.extract_page_text(self.current_page);
+                            }
                         }
                     });
                 });
@@ -293,146 +476,101 @@ impl PdfViewer {
                                 .auto_shrink([false; 2])
                                 .id_source("pdf_content")
                                 .show(ui, |ui| {
-                                    // Rendered PDF view
-                                    if let Some(page_data) = self.pages.get(&self.current_page) {
-                                        // Calculate content size with zoom
-                                        let width = 612.0 * self.zoom;  // Standard letter width
-                                        let height = 792.0 * self.zoom; // Standard letter height
+                                    // Check if we have a rendered page texture
+                                    if let Some(texture) = self.page_textures.get(&self.current_page) {
+                                        // Calculate scaled size based on zoom
+                                        let size = texture.size_vec2() * self.zoom;
                                         
-                                        // Allocate space for the page
-                                        let (response, painter) = ui.allocate_painter(
-                                            Vec2::new(width, height),
-                                            egui::Sense::hover()
-                                        );
-                                        
-                                        let rect = response.rect;
-                                        
-                                        // Draw the page background
-                                        painter.rect_filled(rect, 0.0, Color32::WHITE);
-                                        painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0, Color32::GRAY));
-                                        
-                                        // Add a header with page number
-                                        let header_rect = egui::Rect::from_min_max(
-                                            rect.min,
-                                            egui::pos2(rect.max.x, rect.min.y + 40.0 * self.zoom)
-                                        );
-                                        painter.rect_filled(header_rect, 0.0, Color32::from_rgb(240, 240, 240));
-                                        
-                                        // Page number text
-                                        painter.text(
-                                            egui::pos2(rect.center().x, header_rect.center().y),
-                                            egui::Align2::CENTER_CENTER,
-                                            format!("Page {} of {}", self.current_page + 1, self.total_pages),
-                                            egui::FontId::proportional(16.0 * self.zoom),
-                                            Color32::BLACK
-                                        );
-                                        
-                                        // Draw content area
-                                        let content_rect = egui::Rect::from_min_max(
-                                            egui::pos2(rect.min.x + 50.0 * self.zoom, header_rect.max.y + 20.0 * self.zoom),
-                                            egui::pos2(rect.max.x - 50.0 * self.zoom, rect.max.y - 50.0 * self.zoom)
-                                        );
-                                        
-                                        // Draw text content
-                                        if !page_data.text.is_empty() {
-                                            let mut paragraphs = Vec::new();
-                                            let mut current_paragraph = String::new();
+                                        // Center the page in the view
+                                        ui.vertical_centered(|ui| {
+                                            ui.image(texture, size);
+                                        });
+                                    } else {
+                                        // Render the page if not available
+                                        if self.poppler_document.is_some() {
+                                            self.render_page(self.current_page, ctx);
                                             
-                                            for line in page_data.text.lines() {
-                                                let trimmed = line.trim();
-                                                if trimmed.is_empty() {
-                                                    if !current_paragraph.is_empty() {
-                                                        paragraphs.push(current_paragraph);
-                                                        current_paragraph = String::new();
-                                                    }
-                                                } else {
-                                                    if !current_paragraph.is_empty() {
-                                                        current_paragraph.push(' ');
-                                                    }
-                                                    current_paragraph.push_str(trimmed);
-                                                }
-                                            }
-                                            
-                                            if !current_paragraph.is_empty() {
-                                                paragraphs.push(current_paragraph);
-                                            }
-                                            
-                                            let font_size = 14.0 * self.zoom;
-                                            let line_height = font_size * 1.5;
-                                            let mut y_offset = content_rect.min.y;
-                                            
-                                            // Limit to first few paragraphs for performance
-                                            for (i, paragraph) in paragraphs.iter().take(15).enumerate() {
-                                                // Wrap text to fit in the content area
-                                                let max_width = content_rect.width();
-                                                let text = paragraph;
+                                            ui.vertical_centered(|ui| {
+                                                ui.add_space(50.0);
+                                                ui.label("Rendering page...");
+                                                ui.add_space(50.0);
+                                            });
+                                        } else {
+                                            // Fallback to painter-based rendering if Poppler isn't available
+                                            if let Some(page_data) = self.pages.get(&self.current_page) {
+                                                // Calculate content size with zoom
+                                                let width = 612.0 * self.zoom;  // Standard letter width
+                                                let height = 792.0 * self.zoom; // Standard letter height
                                                 
-                                                // For simplicity, we'll just draw the text and let it clip
+                                                // Allocate space for the page
+                                                let (response, painter) = ui.allocate_painter(
+                                                    Vec2::new(width, height),
+                                                    egui::Sense::hover()
+                                                );
+                                                
+                                                let rect = response.rect;
+                                                
+                                                // Draw the page background
+                                                painter.rect_filled(rect, 0.0, Color32::WHITE);
+                                                painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0, Color32::GRAY));
+                                                
+                                                // Add a header with page number
+                                                let header_rect = egui::Rect::from_min_max(
+                                                    rect.min,
+                                                    egui::pos2(rect.max.x, rect.min.y + 40.0 * self.zoom)
+                                                );
+                                                painter.rect_filled(header_rect, 0.0, Color32::from_rgb(240, 240, 240));
+                                                
+                                                // Page number text
                                                 painter.text(
-                                                    egui::pos2(content_rect.min.x, y_offset),
-                                                    egui::Align2::LEFT_TOP,
-                                                    text,
-                                                    egui::FontId::proportional(font_size),
+                                                    egui::pos2(rect.center().x, header_rect.center().y),
+                                                    egui::Align2::CENTER_CENTER,
+                                                    format!("Page {} of {}", self.current_page + 1, self.total_pages),
+                                                    egui::FontId::proportional(16.0 * self.zoom),
                                                     Color32::BLACK
                                                 );
                                                 
-                                                y_offset += line_height * 2.0;
+                                                // Draw content area
+                                                let content_rect = egui::Rect::from_min_max(
+                                                    egui::pos2(rect.min.x + 50.0 * self.zoom, header_rect.max.y + 20.0 * self.zoom),
+                                                    egui::pos2(rect.max.x - 50.0 * self.zoom, rect.max.y - 50.0 * self.zoom)
+                                                );
                                                 
-                                                // Add a small separator between paragraphs
-                                                if i < paragraphs.len() - 1 {
-                                                    painter.line_segment(
-                                                        [
-                                                            egui::pos2(content_rect.min.x, y_offset - line_height * 0.5),
-                                                            egui::pos2(content_rect.min.x + 100.0 * self.zoom, y_offset - line_height * 0.5)
-                                                        ],
-                                                        egui::Stroke::new(1.0, Color32::LIGHT_GRAY)
+                                                // Draw text content
+                                                if !page_data.text.is_empty() {
+                                                    let font_size = 14.0 * self.zoom;
+                                                    let line_height = font_size * 1.5;
+                                                    let mut y_offset = content_rect.min.y;
+                                                    
+                                                    // Simple text rendering
+                                                    painter.text(
+                                                        egui::pos2(content_rect.min.x, y_offset),
+                                                        egui::Align2::LEFT_TOP,
+                                                        &page_data.text,
+                                                        egui::FontId::proportional(font_size),
+                                                        Color32::BLACK
+                                                    );
+                                                } else {
+                                                    // No text available
+                                                    painter.text(
+                                                        content_rect.center(),
+                                                        egui::Align2::CENTER_CENTER,
+                                                        "No text content available",
+                                                        egui::FontId::proportional(16.0 * self.zoom),
+                                                        Color32::DARK_GRAY
                                                     );
                                                 }
+                                            } else {
+                                                // Load page data if not available
+                                                self.load_page_text(self.current_page);
+                                                
+                                                ui.vertical_centered(|ui| {
+                                                    ui.add_space(50.0);
+                                                    ui.label("Rendering page...");
+                                                    ui.add_space(50.0);
+                                                });
                                             }
-                                            
-                                            // Indicate that there's more content if necessary
-                                            if paragraphs.len() > 15 {
-                                                painter.text(
-                                                    egui::pos2(content_rect.center().x, content_rect.max.y - 20.0 * self.zoom),
-                                                    egui::Align2::CENTER_BOTTOM,
-                                                    "...",
-                                                    egui::FontId::proportional(16.0 * self.zoom),
-                                                    Color32::DARK_GRAY
-                                                );
-                                            }
-                                        } else {
-                                            // No text available
-                                            painter.text(
-                                                content_rect.center(),
-                                                egui::Align2::CENTER_CENTER,
-                                                "No text content available",
-                                                egui::FontId::proportional(16.0 * self.zoom),
-                                                Color32::DARK_GRAY
-                                            );
                                         }
-                                        
-                                        // Draw page footer
-                                        let footer_rect = egui::Rect::from_min_max(
-                                            egui::pos2(rect.min.x, rect.max.y - 30.0 * self.zoom),
-                                            rect.max
-                                        );
-                                        
-                                        painter.text(
-                                            footer_rect.center(),
-                                            egui::Align2::CENTER_CENTER,
-                                            "PDFScan Viewer",
-                                            egui::FontId::proportional(12.0 * self.zoom),
-                                            Color32::DARK_GRAY
-                                        );
-                                    } else {
-                                        // Load page data if not available
-                                        self.load_page_text(self.current_page);
-                                        
-                                        ui.vertical_centered(|ui| {
-                                            ui.add_space(50.0);
-                                            ui.label("Rendering page...");
-                                            ui.add_space(50.0);
-                                        });
                                     }
                                 });
                         });
