@@ -16,6 +16,27 @@ zip = "0.6.6"
 chrono = "0.4.35"
 lopdf = "0.31.0"
 
+# UI dependencies
+eframe = "0.26.2"
+egui = "0.26.2"
+egui_extras = { version = "0.26.2", features = ["image"] }
+image = { version = "0.24.8", features = ["jpeg", "png"] }
+rfd = "0.13.0"
+thiserror = "1.0.58"
+env_logger = "0.11.2"
+anyhow = "1.0.80"
+egui-modal = "0.3.1"
+
+[features]
+default = ["cli", "gui"]
+cli = []
+gui = []
+
 [[bin]]
 name = "pdfscan"
 path = "src/main.rs"
+
+[[bin]]
+name = "pdfscan-gui"
+path = "src/gui_main.rs"
+required-features = ["gui"]

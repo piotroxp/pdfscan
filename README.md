@@ -1,9 +1,10 @@
 # PDFScan
 
-A versatile command-line tool for extracting text from PDFs and searching within PDF documents.
+A versatile PDF reader and analysis tool with a sleek, minimalist interface.
 
 ## Features
 
+- **Sleek PDF Reader** with fast loading and navigation
 - **Extract text** from PDF files into a single output file with clear document boundaries
 - **Search for text** within PDF files across multiple directories
 - **Analyze keyword correlations** across PDF documents and rank files by relevance
@@ -21,16 +22,43 @@ A versatile command-line tool for extracting text from PDFs and searching within
 
 ```bash
 # Clone this repository
-git clone https://github.com/piotroxp/pdfscan.git
+git clone https://github.com/username/pdfscan.git
 cd pdfscan
 
-# Build the project
+# Build the command-line tool
 cargo build --release
 
-# The binary will be available at ./target/release/pdfscan
+# Build the GUI application
+cargo build --release --bin pdfscan-gui
+
+# The binaries will be available at:
+# ./target/release/pdfscan (CLI tool)
+# ./target/release/pdfscan-gui (GUI application)
 ```
 
-## Usage
+## GUI Application
+
+PDFScan includes a sleek, minimalist GUI application for reading and analyzing PDF files:
+
+![PDFScan GUI](screenshot.png)
+
+### GUI Features
+
+- **Clean, Distraction-Free Interface** - Focus on the content, not the UI
+- **Fast PDF Loading** - Optimized for quick opening and navigation
+- **Advanced Search** - Search within documents or across multiple files
+- **Keyword Analysis** - Analyze keyword correlations across documents
+- **Dark Mode** - Easy on the eyes for extended reading sessions
+
+### Running the GUI
+
+```bash
+./target/release/pdfscan-gui
+```
+
+## Command-Line Usage
+
+PDFScan also provides a powerful command-line interface:
 
 ### Text Extraction
 
