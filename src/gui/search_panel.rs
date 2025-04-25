@@ -13,8 +13,7 @@ pub struct SearchPanel {
     search_results: Vec<SearchResult>,
     search_paths: Vec<PathBuf>,
     case_sensitive: bool,
-    search_in_current: bool,
-    search_in_directory: bool,
+    search_scope: SearchScope,
     directory_path: Option<PathBuf>,
     is_searching: bool,
     create_zip: bool,
@@ -34,6 +33,12 @@ struct MatchResult {
     position: usize,
 }
 
+#[derive(PartialEq)]
+enum SearchScope {
+    CurrentDocument,
+    Directory,
+}
+
 impl SearchPanel {
     pub fn new() -> Self {
         Self {
@@ -41,8 +46,7 @@ impl SearchPanel {
             search_results: Vec::new(),
             search_paths: Vec::new(),
             case_sensitive: false,
-            search_in_current: true,
-            search_in_directory: false,
+            search_scope: SearchScope::CurrentDocument,
             directory_path: None,
             is_searching: false,
             create_zip: false,
@@ -72,27 +76,35 @@ impl SearchPanel {
         ui.label(RichText::new("Search scope:").strong());
         
         let has_current = pdf_viewer.current_pdf().is_some();
-        ui.horizontal(|ui| {
-            ui.radio_value(&mut self.search_in_current, true, "Current document");
-            if !has_current {
-                ui.label(RichText::new("(No document open)").italics().color(Color32::GRAY));
-            }
-        });
         
-        ui.horizontal(|ui| {
-            ui.radio_value(&mut self.search_in_directory, true, "Directory");
-            
-            if self.search_in_directory {
+        // Properly use radio buttons with an enum
+        let current_doc_response = ui.radio(self.search_scope == SearchScope::CurrentDocument, "Current document");
+        if current_doc_response.clicked() {
+            self.search_scope = SearchScope::CurrentDocument;
+        }
+        
+        if !has_current {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("(No document open)").italics().color(Color32::GRAY));
+            });
+        }
+        
+        let dir_response = ui.radio(self.search_scope == SearchScope::Directory, "Directory");
+        if dir_response.clicked() {
+            self.search_scope = SearchScope::Directory;
+        }
+        
+        if self.search_scope == SearchScope::Directory {
+            ui.horizontal(|ui| {
+                ui.label("   ");  // Indent
                 if ui.button("📁 Select...").clicked() {
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
                         self.directory_path = Some(path);
                     }
                 }
-            }
-        });
-        
-        // Show selected directory
-        if self.search_in_directory {
+            });
+            
+            // Show selected directory
             if let Some(path) = &self.directory_path {
                 ui.group(|ui| {
                     ui.label(RichText::new("Selected directory:").strong());
@@ -109,11 +121,13 @@ impl SearchPanel {
         
         // Search button
         let button_enabled = (!self.search_query.is_empty()) && 
-                           ((self.search_in_current && has_current) || 
-                            (self.search_in_directory && self.directory_path.is_some()));
+                          ((self.search_scope == SearchScope::CurrentDocument && has_current) || 
+                           (self.search_scope == SearchScope::Directory && self.directory_path.is_some()));
         
         if ui.add_enabled(button_enabled && !self.is_searching,
-            egui::Button::new(if self.is_searching { "Searching..." } else { "Search" }))
+            egui::Button::new(if self.is_searching { "Searching..." } else { "Search" })
+                .min_size(egui::vec2(120.0, 28.0))  // Make button more prominent
+                .fill(ui.style().visuals.selection.bg_fill))
             .clicked()
         {
             self.perform_search(pdf_viewer);
@@ -126,7 +140,7 @@ impl SearchPanel {
         self.search_results.clear();
         
         // Search in current document
-        if self.search_in_current {
+        if self.search_scope == SearchScope::CurrentDocument {
             if let Some(pdf_path) = pdf_viewer.current_pdf() {
                 let text = pdf_viewer.text();
                 let matches = self.search_in_text(&text);
@@ -144,7 +158,7 @@ impl SearchPanel {
             }
         }
         // Search in directory
-        else if self.search_in_directory {
+        else if self.search_scope == SearchScope::Directory {
             if let Some(dir_path) = &self.directory_path {
                 // Clone data for thread
                 let dir_path_clone = dir_path.clone();
@@ -280,7 +294,7 @@ impl SearchPanel {
                     if ui.button("📁 Select Directory").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
                             self.directory_path = Some(path);
-                            self.search_in_directory = true;
+                            self.search_scope = SearchScope::Directory;
                         }
                     }
                 });
@@ -297,17 +311,20 @@ impl SearchPanel {
                         // Search input
                         let text_edit = TextEdit::singleline(&mut self.search_query)
                             .hint_text("Search in PDFs...")
-                            .desired_width(ui.available_width() - 120.0);
+                            .desired_width(ui.available_width() - 140.0);
                         
                         ui.add(text_edit);
                         ui.checkbox(&mut self.case_sensitive, "Case sensitive");
                         
                         let button_enabled = !self.search_query.is_empty() && 
-                            ((self.search_in_current && pdf_viewer.current_pdf().is_some()) || 
-                            (self.search_in_directory && self.directory_path.is_some()));
+                            ((self.search_scope == SearchScope::CurrentDocument && pdf_viewer.current_pdf().is_some()) || 
+                            (self.search_scope == SearchScope::Directory && self.directory_path.is_some()));
                         
+                        // Make search button more prominent
                         if ui.add_enabled(button_enabled && !self.is_searching,
-                            egui::Button::new(if self.is_searching { "Searching..." } else { "Search" }))
+                            egui::Button::new(if self.is_searching { "Searching..." } else { "Search" })
+                                .min_size(egui::vec2(120.0, 28.0))
+                                .fill(ui.style().visuals.selection.bg_fill))
                             .clicked()
                         {
                             self.perform_search(pdf_viewer);
@@ -317,16 +334,22 @@ impl SearchPanel {
                     // Search scope selection
                     ui.horizontal(|ui| {
                         ui.label("Search in:");
-                        ui.radio_value(&mut self.search_in_current, true, "Current document");
-                        ui.radio_value(&mut self.search_in_directory, true, "Directory");
                         
-                        if self.search_in_directory {
+                        if ui.radio(self.search_scope == SearchScope::CurrentDocument, "Current document").clicked() {
+                            self.search_scope = SearchScope::CurrentDocument;
+                        }
+                        
+                        if ui.radio(self.search_scope == SearchScope::Directory, "Directory").clicked() {
+                            self.search_scope = SearchScope::Directory;
+                        }
+                        
+                        if self.search_scope == SearchScope::Directory {
                             ui.checkbox(&mut self.create_zip, "Create ZIP with results");
                         }
                     });
                     
                     // Show selected directory if any
-                    if self.search_in_directory {
+                    if self.search_scope == SearchScope::Directory {
                         if let Some(path) = &self.directory_path {
                             ui.horizontal(|ui| {
                                 ui.label("Directory:");

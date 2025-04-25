@@ -14,6 +14,7 @@ pub struct AnalysisPanel {
     correlation_threshold: f32,
     results: Option<AnalysisResult>,
     is_analyzing: bool,
+    error_message: Option<String>,
 }
 
 /// Analysis result
@@ -40,6 +41,7 @@ impl AnalysisPanel {
             correlation_threshold: 0.1,
             results: None,
             is_analyzing: false,
+            error_message: None,
         }
     }
     
@@ -133,6 +135,7 @@ impl AnalysisPanel {
     /// Perform analysis
     fn perform_analysis(&mut self) {
         self.is_analyzing = true;
+        self.error_message = None;
         
         // Parse keywords
         let keywords: Vec<String> = self.keywords
@@ -143,6 +146,7 @@ impl AnalysisPanel {
             
         if keywords.is_empty() {
             self.is_analyzing = false;
+            self.error_message = Some("No keywords specified".to_string());
             return;
         }
         
@@ -154,6 +158,7 @@ impl AnalysisPanel {
             
         if input_paths.is_empty() {
             self.is_analyzing = false;
+            self.error_message = Some("No input sources selected".to_string());
             return;
         }
         
@@ -169,6 +174,8 @@ impl AnalysisPanel {
         // Create shared results for thread communication
         let results = Arc::new(Mutex::new(None));
         let results_clone = results.clone();
+        let error_message = Arc::new(Mutex::new(None));
+        let error_message_clone = error_message.clone();
         
         // Run analysis in a background thread
         std::thread::spawn(move || {
@@ -182,78 +189,90 @@ impl AnalysisPanel {
                     let mut ranked_docs = Vec::new();
                     
                     // Try to read the analysis file
-                    if let Ok(content) = std::fs::read_to_string(&output_file) {
-                        // Parse correlation matrix
-                        // This is a simplified parsing approach - in a real app 
-                        // we would parse the file's structure more carefully
-                        let mut in_matrix = false;
-                        let mut in_ranked = false;
-                        
-                        for line in content.lines() {
-                            // Look for correlation matrix section
-                            if line.contains("Correlation Matrix") {
-                                in_matrix = true;
-                                in_ranked = false;
-                                continue;
-                            }
+                    match std::fs::read_to_string(&output_file) {
+                        Ok(content) => {
+                            // Parse correlation matrix
+                            // This is a simplified parsing approach - in a real app 
+                            // we would parse the file's structure more carefully
+                            let mut in_matrix = false;
+                            let mut in_ranked = false;
                             
-                            // Look for ranked documents section
-                            if line.contains("Ranked Documents") {
-                                in_matrix = false;
-                                in_ranked = true;
-                                continue;
-                            }
-                            
-                            // Parse correlation matrix lines
-                            if in_matrix && line.starts_with(char::is_numeric) {
-                                let parts: Vec<&str> = line.split_whitespace().collect();
-                                if parts.len() >= 2 {
-                                    if let (Ok(i), Ok(j), Ok(val)) = (
-                                        parts[0].parse::<usize>(),
-                                        parts[1].parse::<usize>(),
-                                        parts[2].parse::<f32>()
-                                    ) {
-                                        if i < correlation_matrix.len() && j < correlation_matrix[i].len() {
-                                            correlation_matrix[i][j] = val;
+                            for line in content.lines() {
+                                // Skip lines with Unicode warnings
+                                if line.contains("Unicode mismatch") || line.contains("unknown glyph") {
+                                    continue;
+                                }
+                                
+                                // Look for correlation matrix section
+                                if line.contains("Correlation Matrix") {
+                                    in_matrix = true;
+                                    in_ranked = false;
+                                    continue;
+                                }
+                                
+                                // Look for ranked documents section
+                                if line.contains("Ranked Documents") {
+                                    in_matrix = false;
+                                    in_ranked = true;
+                                    continue;
+                                }
+                                
+                                // Parse correlation matrix lines
+                                if in_matrix && line.starts_with(char::is_numeric) {
+                                    let parts: Vec<&str> = line.split_whitespace().collect();
+                                    if parts.len() >= 3 {
+                                        if let (Ok(i), Ok(j), Ok(val)) = (
+                                            parts[0].parse::<usize>(),
+                                            parts[1].parse::<usize>(),
+                                            parts[2].parse::<f32>()
+                                        ) {
+                                            if i < correlation_matrix.len() && j < correlation_matrix[i].len() {
+                                                correlation_matrix[i][j] = val;
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Parse ranked document lines
+                                if in_ranked && line.contains("). ") {
+                                    let parts: Vec<&str> = line.split("). ").collect();
+                                    if parts.len() >= 2 {
+                                        let name_parts: Vec<&str> = parts[1].split(" (score: ").collect();
+                                        if name_parts.len() >= 2 {
+                                            let name = name_parts[0].to_string();
+                                            if let Ok(score) = name_parts[1].trim_end_matches(')').parse::<f32>() {
+                                                // Create a path from the name (simplified approach)
+                                                let path = PathBuf::from(&name);
+                                                
+                                                ranked_docs.push(RankedDocument {
+                                                    name,
+                                                    path,
+                                                    score,
+                                                });
+                                            }
                                         }
                                     }
                                 }
                             }
                             
-                            // Parse ranked document lines
-                            if in_ranked && line.contains("). ") {
-                                let parts: Vec<&str> = line.split("). ").collect();
-                                if parts.len() >= 2 {
-                                    let name_parts: Vec<&str> = parts[1].split(" (score: ").collect();
-                                    if name_parts.len() >= 2 {
-                                        let name = name_parts[0].to_string();
-                                        if let Ok(score) = name_parts[1].trim_end_matches(')').parse::<f32>() {
-                                            // Create a path from the name (simplified approach)
-                                            let path = PathBuf::from(&name);
-                                            
-                                            ranked_docs.push(RankedDocument {
-                                                name,
-                                                path,
-                                                score,
-                                            });
-                                        }
-                                    }
-                                }
-                            }
+                            // Store the results
+                            let mut results = results_clone.lock().unwrap();
+                            *results = Some(AnalysisResult {
+                                keywords: keywords_clone,
+                                correlation_matrix,
+                                ranked_docs,
+                                total_documents: input_paths_clone.len(),
+                            });
+                        },
+                        Err(e) => {
+                            let mut error = error_message_clone.lock().unwrap();
+                            *error = Some(format!("Error reading analysis results: {}", e));
                         }
                     }
-                    
-                    // Store the results
-                    let mut results = results_clone.lock().unwrap();
-                    *results = Some(AnalysisResult {
-                        keywords: keywords_clone,
-                        correlation_matrix,
-                        ranked_docs,
-                        total_documents: input_paths_clone.len(),
-                    });
                 },
                 Err(e) => {
-                    eprintln!("Error performing analysis: {}", e);
+                    let mut error = error_message_clone.lock().unwrap();
+                    *error = Some(format!("Error performing analysis: {}", e));
                 }
             }
         });
@@ -273,6 +292,12 @@ impl AnalysisPanel {
             });
         }
         
+        // Check for errors
+        let locked_error = error_message.lock().unwrap();
+        if let Some(error) = &*locked_error {
+            self.error_message = Some(error.clone());
+        }
+        
         self.is_analyzing = false;
     }
     
@@ -280,6 +305,23 @@ impl AnalysisPanel {
     pub fn show(&mut self, ui: &mut Ui, ctx: &Context, pdf_viewer: &mut PdfViewer) {
         ui.vertical(|ui| {
             ui.heading("Keyword Analysis");
+            
+            // Show error message if any
+            let mut clear_error = false;
+            {
+                if let Some(error) = &self.error_message {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("⚠ Error:").color(Color32::RED).strong());
+                        ui.label(error);
+                        clear_error = ui.button("×").clicked();
+                    });
+                    ui.separator();
+                }
+            }
+            
+            if clear_error {
+                self.error_message = None;
+            }
             
             // Analysis configuration
             ui.collapsing("Analysis Configuration", |ui| {

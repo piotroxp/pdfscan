@@ -246,12 +246,54 @@ impl PdfViewer {
                             ui.painter().rect_filled(content_rect, 4.0, Color32::WHITE);
                             ui.painter().rect_stroke(content_rect, 4.0, egui::Stroke::new(1.0, Color32::GRAY));
                             
-                            // Show the text
+                            // Show the text in a PDF-like format
                             ui.allocate_rect(content_rect, egui::Sense::hover());
                             
-                            // Add text with proper padding
+                            // Create a more readable PDF-like layout
                             let text_rect = content_rect.shrink(20.0);
-                            ui.put(text_rect, egui::Label::new(&page_data.text).wrap(true));
+                            
+                            // Display PDF content with better formatting
+                            if !page_data.text.is_empty() {
+                                let mut paragraphs = Vec::new();
+                                let mut current_paragraph = String::new();
+                                
+                                for line in page_data.text.lines() {
+                                    let trimmed = line.trim();
+                                    if trimmed.is_empty() {
+                                        if !current_paragraph.is_empty() {
+                                            paragraphs.push(current_paragraph);
+                                            current_paragraph = String::new();
+                                        }
+                                    } else {
+                                        if !current_paragraph.is_empty() {
+                                            current_paragraph.push(' ');
+                                        }
+                                        current_paragraph.push_str(trimmed);
+                                    }
+                                }
+                                
+                                if !current_paragraph.is_empty() {
+                                    paragraphs.push(current_paragraph);
+                                }
+                                
+                                let mut current_y = text_rect.min.y;
+                                let line_height = 20.0;
+                                
+                                for paragraph in paragraphs {
+                                    let paragraph_rect = egui::Rect::from_min_max(
+                                        egui::pos2(text_rect.min.x, current_y),
+                                        egui::pos2(text_rect.max.x, current_y + line_height * 5.0)
+                                    );
+                                    
+                                    ui.put(paragraph_rect, egui::Label::new(&paragraph).wrap(true));
+                                    current_y += line_height * 2.0;
+                                }
+                            } else {
+                                ui.put(text_rect, egui::Label::new("No text content available"));
+                                ui.vertical_centered(|ui| {
+                                    ui.label("No text content available");
+                                });
+                            }
                         } else {
                             ui.vertical_centered(|ui| {
                                 ui.add_space(50.0);
