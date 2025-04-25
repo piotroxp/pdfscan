@@ -95,16 +95,10 @@ impl PdfViewer {
             let lopdf_result = Document::load(&path_clone);
             
             // Load with Poppler for rendering
-            let poppler_result = PopplerDocument::from_file(
-                path_clone.to_str().unwrap_or_default(),
-                None, // No password
-            );
+            // No need to handle Poppler document here as we'll do it in process_loaded_document
             
-            match (lopdf_result, poppler_result) {
-                (Ok(document), Ok(_poppler_doc)) => {
-                    // Get the number of pages from Poppler is now handled in process_loaded_document
-                    // No need to store page_count here as it wasn't being used
-                    
+            match lopdf_result {
+                Ok(document) => {
                     // Extract text for search and analysis
                     match extract_text_from_pdf(&path_clone) {
                         Ok(text) => {
@@ -120,14 +114,8 @@ impl PdfViewer {
                     let doc = Arc::new(document);
                     let mut document_loaded = document_loaded.lock().unwrap();
                     *document_loaded = Some(doc);
-                    
-                    // Return poppler document as well (we'll handle this in process_loaded_document)
-                    // For now we just return the lopdf document
                 },
-                (_, Err(e)) => {
-                    eprintln!("Error loading PDF with Poppler: {:?}", e);
-                },
-                (Err(e), _) => {
+                Err(e) => {
                     eprintln!("Error loading PDF with lopdf: {}", e);
                 }
             }
@@ -149,8 +137,26 @@ impl PdfViewer {
                 
                 // Try to load the document with Poppler for rendering
                 if let Some(path) = &self.current_pdf_path {
+                    // Convert path to a properly encoded file URI
+                    // First get absolute path
+                    let absolute_path = if path.is_absolute() {
+                        path.clone()
+                    } else {
+                        std::env::current_dir().unwrap_or_default().join(path)
+                    };
+                    
+                    // Then convert to URI with proper escaping
+                    let path_str = absolute_path.to_string_lossy();
+                    let file_uri = if cfg!(windows) {
+                        // Windows paths need special handling
+                        format!("file:///{}", path_str.replace('\\', "/"))
+                    } else {
+                        // Unix paths just need the scheme prefix
+                        format!("file://{}", path_str)
+                    };
+                    
                     match PopplerDocument::from_file(
-                        path.to_str().unwrap_or_default(),
+                        &file_uri,
                         None, // No password
                     ) {
                         Ok(poppler_doc) => {
