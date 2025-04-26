@@ -1,11 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
 
 use egui::{Context, Ui, RichText, Color32, TextEdit};
 
 use super::pdf_viewer::PdfViewer;
-use crate::search;
 
 /// Search panel component
 pub struct SearchPanel {
@@ -285,7 +283,7 @@ impl SearchPanel {
     }
     
     /// Show the search panel in the main content area
-    pub fn show(&mut self, ui: &mut Ui, ctx: &Context, pdf_viewer: &mut PdfViewer) {
+    pub fn show(&mut self, ui: &mut Ui, _ctx: &Context, pdf_viewer: &mut PdfViewer) {
         ui.vertical(|ui| {
             // Top search bar
             ui.horizontal(|ui| {

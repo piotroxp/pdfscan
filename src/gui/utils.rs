@@ -1,5 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::fs;
+use egui::{Button, Color32, Ui};
 
 /// Formats a file size for display
 pub fn format_file_size(size: u64) -> String {
@@ -43,4 +44,11 @@ pub fn get_file_extension(path: &Path) -> String {
 /// Checks if a file is a PDF
 pub fn is_pdf(path: &Path) -> bool {
     get_file_extension(path) == "pdf"
+}
+
+/// Sets up styling for search buttons
+pub fn setup_search_button_style<'a>(_ui: &mut Ui, button: Button<'a>) -> Button<'a> {
+    button
+        .fill(Color32::from_rgb(60, 120, 180))
+        .stroke((1.0, Color32::from_rgb(40, 80, 120)))
 } 

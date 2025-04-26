@@ -1,11 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
 
 use egui::{Context, Ui, RichText, Color32, TextEdit, Vec2};
 
 use super::pdf_viewer::PdfViewer;
-use crate::stats;
 
 /// Analysis panel component
 pub struct AnalysisPanel {
@@ -66,7 +64,7 @@ impl AnalysisPanel {
         // Add current document
         if let Some(current_pdf) = pdf_viewer.current_pdf() {
             let name = current_pdf.file_name().unwrap_or_default().to_string_lossy().to_string();
-            let path_str = current_pdf.to_string_lossy().to_string();
+            let _path_str = current_pdf.to_string_lossy().to_string();
             
             ui.horizontal(|ui| {
                 ui.label("Current:");
@@ -302,7 +300,7 @@ impl AnalysisPanel {
     }
     
     /// Show the analysis panel in the main content area
-    pub fn show(&mut self, ui: &mut Ui, ctx: &Context, pdf_viewer: &mut PdfViewer) {
+    pub fn show(&mut self, ui: &mut Ui, _ctx: &Context, pdf_viewer: &mut PdfViewer) {
         ui.vertical(|ui| {
             ui.heading("Keyword Analysis");
             
@@ -404,7 +402,7 @@ impl AnalysisPanel {
                         ui.label("Need at least 2 keywords to show correlations");
                     } else {
                         // Draw correlation matrix
-                        let matrix_size = Vec2::new(
+                        let _matrix_size = Vec2::new(
                             (results.keywords.len() * 60) as f32, 
                             (results.keywords.len() * 30) as f32
                         );
@@ -473,5 +471,10 @@ impl AnalysisPanel {
                 });
             }
         });
+    }
+
+    fn show_heatmap(&mut self, _ui: &mut Ui, _data: &[f32]) {
+        let _matrix_size = Vec2::new(100.0, 100.0);
+        // ... existing code (if any) ...
     }
 } 

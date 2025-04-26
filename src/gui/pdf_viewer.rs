@@ -162,11 +162,10 @@ impl PdfViewer {
                                 self.total_pages = pdfium_doc.pages().len() as usize;
                                 
                                 // Try to extract title from document information
-                                if let Ok(info) = pdfium_doc.document_info() {
-                                    if let Ok(Some(title)) = info.title() {
-                                        if !title.is_empty() {
-                                            self.document_title = title;
-                                        }
+                                let metadata = pdfium_doc.metadata();
+                                if let Ok(title) = metadata.title() {
+                                    if !title.is_empty() {
+                                        self.document_title = title;
                                     }
                                 }
                                 
@@ -251,20 +250,22 @@ impl PdfViewer {
                             
                         match page.render_with_config(&config) {
                             Ok(bitmap) => {
-                                // Get the bitmap data
-                                let bitmap_data = bitmap.as_raw_rgba8();
+                                // Get the bitmap data using raw_pixels() which is the correct method in pdfium-render 0.8.30
+                                let bitmap_width = bitmap.width() as u32;
+                                let bitmap_height = bitmap.height() as u32;
+                                let bitmap_data = bitmap.raw_pixels();
                                 
                                 // Copy bitmap data to our image buffer
                                 for y in 0..height_px as u32 {
                                     for x in 0..width_px as u32 {
-                                        if x < bitmap_data.width() && y < bitmap_data.height() {
-                                            let idx = (y * bitmap_data.width() + x) as usize * 4;
+                                        if x < bitmap_width && y < bitmap_height {
+                                            let idx = (y * bitmap_width + x) as usize * 4;
                                             
-                                            if idx + 3 < bitmap_data.data().len() {
-                                                let r = bitmap_data.data()[idx];
-                                                let g = bitmap_data.data()[idx + 1];
-                                                let b = bitmap_data.data()[idx + 2];
-                                                let a = bitmap_data.data()[idx + 3];
+                                            if idx + 3 < bitmap_data.len() {
+                                                let r = bitmap_data[idx];
+                                                let g = bitmap_data[idx + 1];
+                                                let b = bitmap_data[idx + 2];
+                                                let a = bitmap_data[idx + 3];
                                                 
                                                 img.put_pixel(x, y, Rgba([r, g, b, a]));
                                             }

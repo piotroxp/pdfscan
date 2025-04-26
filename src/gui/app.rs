@@ -136,7 +136,7 @@ impl PdfScanApp {
     }
     
     /// Draw the sidebar
-    fn sidebar(&mut self, ui: &mut Ui, ctx: &Context) {
+    fn sidebar(&mut self, _ui: &mut Ui, ctx: &Context) {
         if !self.show_sidebar {
             return;
         }
