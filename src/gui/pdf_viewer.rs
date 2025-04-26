@@ -618,6 +618,27 @@ impl PdfViewer {
                         if ui.add_enabled(self.zoom < 3.0, egui::Button::new("🔍+")).clicked() {
                             self.zoom = (self.zoom + 0.1).min(3.0);
                         }
+                        
+                        // Add snap to page button
+                        if ui.button("Snap to page").clicked() {
+                            if let Some(texture) = self.page_textures.get(&self.current_page) {
+                                // Get the available space in the panel
+                                let available_size = ui.available_size();
+                                
+                                // Get the page size from the texture
+                                let page_size = texture.size_vec2();
+                                
+                                // Calculate zoom factors for width and height
+                                let width_factor = available_size.x / page_size.x;
+                                let height_factor = available_size.y / page_size.y;
+                                
+                                // Use the smaller factor to ensure the page fits
+                                let fit_zoom = (width_factor.min(height_factor) * 0.85).min(3.0).max(0.1);
+                                
+                                // Set the new zoom level
+                                self.zoom = fit_zoom;
+                            }
+                        }
 
                         // View mode toggle
                         ui.separator();
