@@ -2,10 +2,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::convert::TryFrom;
-
+use std::panic::AssertUnwindSafe;
+use eframe::glow::Texture;
 use egui::{Context, Ui, Vec2, RichText, Color32, TextureHandle};
 use lopdf::Document;
 use image::{ImageBuffer, Rgba};
+use PdfDocumentMetadataTagType::Title;
 use pdfium_render::prelude::*;
 
 /// PDF viewer component that renders PDFs using Pdfium
@@ -148,35 +150,36 @@ impl PdfViewer {
                 let mut document_loaded = self.document_loaded.lock().unwrap();
                 document_loaded.take()
             };
-            
+
             if let Some(doc) = doc_option {
                 // Update state with the loaded document
                 self.document = Some(doc.clone());
-                
+
                 // Try to load the document with Pdfium for rendering
                 if let Some(path) = &self.current_pdf_path {
-                    if let Some(pdfium) = &self.pdfium {
-                        match pdfium.load_pdf_from_file(path, None) {
+                    if let Some(pdfium) = &mut self.pdfium {
+                        // Store the result separately to avoid the borrow issue
+                        let pdfium_result = pdfium.load_pdf_from_file(path, None);
+
+                        match pdfium_result {
                             Ok(pdfium_doc) => {
                                 // Get the number of pages
                                 self.total_pages = pdfium_doc.pages().len() as usize;
-                                
+
                                 // Try to extract title from document information
                                 let metadata = pdfium_doc.metadata();
-                                if let Ok(title) = metadata.title() {
-                                    if !title.is_empty() {
-                                        self.document_title = title;
-                                    }
+                                if let Some(title) = metadata.get(Title) {
+                                    self.document_title = title.value().to_string();
                                 }
-                                
+
                                 // Store document for rendering
                                 // We need to use a nasty trick to convert lifetimes
-                                let document: PdfDocument<'static> = unsafe { 
-                                    std::mem::transmute(pdfium_doc) 
+                                let document: PdfDocument<'static> = unsafe {
+                                    std::mem::transmute(pdfium_doc)
                                 };
                                 self.pdfium_document = Some(Arc::new(PdfDocumentWrapper { document }));
-                                
-                                // Render the first page
+
+                                // Now call render_page
                                 self.render_page(0, ctx);
                             },
                             Err(e) => {
@@ -191,10 +194,10 @@ impl PdfViewer {
                         eprintln!("Pdfium library not initialized");
                     }
                 }
-                
+
                 // Load first page text
                 self.extract_page_text(0);
-                
+
                 // Document loading complete
                 self.loading = false;
             }
@@ -221,10 +224,10 @@ impl PdfViewer {
             
             // Get the page with error handling
             let page_result = pdfium_doc.document.pages().get(page_index);
-            
+
             match page_result {
                 Ok(page) => {
-                    let result = std::panic::catch_unwind(|| {
+                    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                         // Get page dimensions (in points)
                         let width_points = page.width();
                         let height_points = page.height();
@@ -253,7 +256,7 @@ impl PdfViewer {
                                 // Get the bitmap data using raw_pixels() which is the correct method in pdfium-render 0.8.30
                                 let bitmap_width = bitmap.width() as u32;
                                 let bitmap_height = bitmap.height() as u32;
-                                let bitmap_data = bitmap.raw_pixels();
+                                let bitmap_data = bitmap.as_raw_bytes();
                                 
                                 // Copy bitmap data to our image buffer
                                 for y in 0..height_px as u32 {
@@ -296,11 +299,11 @@ impl PdfViewer {
                                 None
                             }
                         }
-                    });
+                    }));
                     
                     if let Ok(Some((texture, size))) = result {
                         // Store texture for reuse
-                        self.page_textures.insert(page_num, texture);
+                        self.insert_page_textures(page_num, texture);
                         
                         // Also extract text for this page
                         let mut page_text = String::new();
@@ -328,6 +331,10 @@ impl PdfViewer {
         } else {
             self.render_fallback_page(page_num, ctx);
         }
+    }
+
+    fn insert_page_textures(&mut self, page_num: usize, texture: TextureHandle) {
+        let _ = self.page_textures.insert(page_num, texture);
     }
 
     /// Render a fallback page when Pdfium rendering fails
@@ -384,7 +391,7 @@ impl PdfViewer {
         );
         
         // Store texture for reuse
-        self.page_textures.insert(page_num, texture);
+        self.insert_page_textures(page_num, texture);
         
         // Extract text if needed
         self.extract_page_text(page_num);
