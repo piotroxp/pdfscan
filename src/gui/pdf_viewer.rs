@@ -504,6 +504,51 @@ impl PdfViewer {
         // Process any loaded document
         self.process_loaded_document(ctx);
         
+        // Handle keyboard navigation
+        if self.document.is_some() || self.pdfium_document.is_some() {
+            let input = ctx.input(|i| i.clone());
+            let mut changed_page = false;
+            
+            if input.key_pressed(egui::Key::ArrowLeft) {
+                // Previous page
+                if self.current_page > 0 {
+                    self.current_page = self.current_page.saturating_sub(1);
+                    changed_page = true;
+                }
+            } else if input.key_pressed(egui::Key::ArrowRight) {
+                // Next page
+                if self.current_page < self.total_pages.saturating_sub(1) {
+                    self.current_page = (self.current_page + 1).min(self.total_pages.saturating_sub(1));
+                    changed_page = true;
+                }
+            } else if input.key_pressed(egui::Key::Home) {
+                // First page
+                if self.current_page > 0 {
+                    self.current_page = 0;
+                    changed_page = true;
+                }
+            } else if input.key_pressed(egui::Key::End) {
+                // Last page
+                if self.current_page < self.total_pages.saturating_sub(1) {
+                    self.current_page = self.total_pages.saturating_sub(1);
+                    changed_page = true;
+                }
+            }
+            
+            // If page changed, update the view
+            if changed_page {
+                // Pre-render the page (will be cached if already rendered)
+                if self.view_mode == ViewMode::Rendered {
+                    self.render_page(self.current_page, ctx);
+                } else {
+                    self.extract_page_text(self.current_page);
+                }
+                
+                // Request repaint
+                ctx.request_repaint();
+            }
+        }
+        
         // Split the PDF viewer into top controls and content
         ui.vertical(|ui| {
             // Top panel with controls
@@ -554,6 +599,11 @@ impl PdfViewer {
                             } else {
                                 self.extract_page_text(self.current_page);
                             }
+                        }
+                        
+                        // Keyboard shortcut hint
+                        if self.total_pages > 1 {
+                            ui.label(RichText::new("(←/→)").weak().small());
                         }
                         
                         // Zoom controls
