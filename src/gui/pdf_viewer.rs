@@ -154,6 +154,7 @@ impl PdfViewer {
             if let Some(doc) = doc_option {
                 // Update state with the loaded document
                 self.document = Some(doc.clone());
+                let mut needs_render = false;
 
                 // Try to load the document with Pdfium for rendering
                 if let Some(path) = &self.current_pdf_path {
@@ -180,7 +181,7 @@ impl PdfViewer {
                                 self.pdfium_document = Some(Arc::new(PdfDocumentWrapper { document }));
 
                                 // Now call render_page
-                                self.render_page(0, ctx);
+                                needs_render = true;
                             },
                             Err(e) => {
                                 eprintln!("Error loading PDF with Pdfium: {:?}", e);
@@ -192,6 +193,10 @@ impl PdfViewer {
                         }
                     } else {
                         eprintln!("Pdfium library not initialized");
+                    }
+
+                    if needs_render {
+                        self.render_page(0, ctx);
                     }
                 }
 
