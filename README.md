@@ -19,6 +19,7 @@ A versatile PDF reader and analysis tool with a sleek, minimalist interface.
 ### Prerequisites
 
 - Rust and Cargo (install from [rustup.rs](https://rustup.rs/))
+- You need pdfium binaries on your OS [like the ones ArchLinux has](https://aur.archlinux.org/packages/pdfium-binaries)
 
 ### Building from Source
 
