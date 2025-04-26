@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use egui::{Context, Ui, RichText, Color32, TextEdit};
+use egui::{Context, Ui, RichText, Color32, TextEdit, Key};
 
 use super::pdf_viewer::PdfViewer;
 
@@ -283,7 +283,7 @@ impl SearchPanel {
     }
     
     /// Show the search panel in the main content area
-    pub fn show(&mut self, ui: &mut Ui, _ctx: &Context, pdf_viewer: &mut PdfViewer) {
+    pub fn show(&mut self, ui: &mut Ui, ctx: &Context, pdf_viewer: &mut PdfViewer) {
         ui.vertical(|ui| {
             // Top search bar
             ui.horizontal(|ui| {
@@ -306,127 +306,147 @@ impl SearchPanel {
                 .height_range(50.0..=150.0)
                 .show_inside(ui, |ui| {
                     ui.horizontal(|ui| {
-                        // Search input
-                        let text_edit = TextEdit::singleline(&mut self.search_query)
+                        // Search input with Enter key handling
+                        let text_edit_response = TextEdit::singleline(&mut self.search_query)
                             .hint_text("Search in PDFs...")
-                            .desired_width(ui.available_width() - 140.0);
+                            .desired_width(ui.available_width() - 20.0)
+                            .show(ui);
                         
-                        ui.add(text_edit);
                         ui.checkbox(&mut self.case_sensitive, "Case sensitive");
                         
                         let button_enabled = !self.search_query.is_empty() && 
                             ((self.search_scope == SearchScope::CurrentDocument && pdf_viewer.current_pdf().is_some()) || 
                             (self.search_scope == SearchScope::Directory && self.directory_path.is_some()));
                         
-                        // Make search button more prominent
-                        let search_button = egui::Button::new(
-                            RichText::new(if self.is_searching { "Searching..." } else { "Search" })
-                                .size(16.0)
-                                .strong()
-                        )
-                        .min_size(egui::vec2(120.0, 28.0))
-                        .fill(ui.visuals().selection.bg_fill);
-                        
-                        if ui.add_enabled(button_enabled && !self.is_searching, search_button).clicked() {
+                        // Check for Enter key press to trigger search
+                        if button_enabled && !self.is_searching && 
+                           (text_edit_response.response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter))) {
                             self.perform_search(pdf_viewer);
                         }
                     });
                     
                     // Search scope selection
                     ui.horizontal(|ui| {
-                        ui.label("Search in:");
-                        
-                        if ui.radio(self.search_scope == SearchScope::CurrentDocument, "Current document").clicked() {
-                            self.search_scope = SearchScope::CurrentDocument;
-                        }
-                        
-                        if ui.radio(self.search_scope == SearchScope::Directory, "Directory").clicked() {
-                            self.search_scope = SearchScope::Directory;
-                        }
+                        ui.radio_value(&mut self.search_scope, SearchScope::CurrentDocument, "Current document");
+                        ui.radio_value(&mut self.search_scope, SearchScope::Directory, "Directory");
                         
                         if self.search_scope == SearchScope::Directory {
-                            ui.checkbox(&mut self.create_zip, "Create ZIP with results");
+                            if let Some(dir) = &self.directory_path {
+                                ui.label(dir.to_string_lossy().to_string());
+                            } else {
+                                ui.label(RichText::new("No directory selected").italics());
+                            }
+                            
+                            ui.checkbox(&mut self.create_zip, "Create ZIP");
                         }
                     });
-                    
-                    // Show selected directory if any
-                    if self.search_scope == SearchScope::Directory {
-                        if let Some(path) = &self.directory_path {
-                            ui.horizontal(|ui| {
-                                ui.label("Directory:");
-                                ui.label(path.to_string_lossy().to_string());
-                            });
-                        } else {
-                            ui.label(RichText::new("No directory selected. Please select a directory.").italics());
-                        }
-                    }
                 });
             
-            // Results section
-            ui.vertical_centered_justified(|ui| {
-                ui.heading("Results");
+            // Show search results in the central panel
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                self.show_results(ui, pdf_viewer, ctx);
             });
-            
+        });
+    }
+    
+    /// Show the search results
+    fn show_results(&mut self, ui: &mut Ui, pdf_viewer: &mut PdfViewer, ctx: &Context) {
+        // Store search query in memory for highlighting
+        if !self.search_query.is_empty() {
+            ui.memory_mut(|mem| mem.data.insert_temp("search_query".into(), self.search_query.clone()));
+        }
+        
+        if self.is_searching {
+            ui.spinner();
+            ui.label("Searching...");
+            return;
+        }
+        
+        // Show results count
+        ui.horizontal(|ui| {
             if self.search_results.is_empty() {
-                ui.vertical_centered(|ui| {
-                    if self.is_searching {
-                        ui.label("Searching...");
-                    } else if !self.search_query.is_empty() {
-                        ui.label("No results found");
-                    } else {
-                        ui.label("Enter a search query and select where to search");
-                    }
-                });
+                ui.label(RichText::new("No results found").italics());
             } else {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                        for result in &self.search_results {
-                            ui.push_id(&result.file_path, |ui| {
-                                let header = format!("{} ({} matches)", result.file_name, result.match_count);
-                                
-                                egui::CollapsingHeader::new(header)
-                                    .id_source(&result.file_path)
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            if ui.button("Open PDF").clicked() {
-                                                pdf_viewer.load_pdf(&result.file_path);
-                                            }
-                                            ui.label(RichText::new(&*result.file_path.to_string_lossy()).monospace());
-                                        });
-                                        
-                                        ui.add_space(5.0);
-                                        
-                                        // Show matches
-                                        for (i, m) in result.matches.iter().enumerate() {
-                                            ui.group(|ui| {
-                                                // Create a highlighted version of the text
-                                                let text = if self.search_query.is_empty() {
-                                                    m.text.clone()
-                                                } else {
-                                                    // Highlight all occurrences of the search query
-                                                    let parts: Vec<&str> = m.text.split(&self.search_query).collect();
-                                                    if parts.len() <= 1 {
-                                                        m.text.clone()
-                                                    } else {
-                                                        parts.join(&format!("<<{}>>", &self.search_query))
-                                                    }
-                                                };
-                                                
-                                                ui.label(format!("{}. ...{}...", i + 1, text));
-                                                
-                                                if ui.button("Jump to match").clicked() {
-                                                    pdf_viewer.load_pdf(&result.file_path);
-                                                    // TODO: Jump to the specific match position
-                                                }
-                                            });
-                                        }
-                                    });
-                            });
-                        }
-                    });
+                let total_matches: usize = self.search_results.iter().map(|r| r.match_count).sum();
+                ui.label(RichText::new(format!("{} matches found in {} file(s)", total_matches, self.search_results.len())).strong());
             }
         });
+        
+        if self.search_results.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(40.0);
+                
+                if !self.search_query.is_empty() {
+                    ui.label("Try different search terms or checking a different location");
+                } else {
+                    ui.label("Enter a search term and press Enter to search");
+                }
+                
+                ui.add_space(20.0);
+            });
+        } else {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    for result in &self.search_results {
+                        // Format header with file name and match count
+                        let header = format!(
+                            "{} ({} {})", 
+                            result.file_name, 
+                            result.match_count,
+                            if result.match_count == 1 { "match" } else { "matches" }
+                        );
+                        
+                        egui::CollapsingHeader::new(header)
+                            .id_source(&result.file_path)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    if ui.button("Open PDF").clicked() {
+                                        pdf_viewer.load_pdf(&result.file_path);
+                                    }
+                                    ui.label(RichText::new(&*result.file_path.to_string_lossy()).monospace());
+                                });
+                                
+                                ui.add_space(5.0);
+                                
+                                // Show matches
+                                for (i, m) in result.matches.iter().enumerate() {
+                                    ui.group(|ui| {
+                                        // Create a highlighted version of the text
+                                        let text = if self.search_query.is_empty() {
+                                            m.text.clone()
+                                        } else {
+                                            // Highlight all occurrences of the search query
+                                            let parts: Vec<&str> = m.text.split(&self.search_query).collect();
+                                            if parts.len() <= 1 {
+                                                m.text.clone()
+                                            } else {
+                                                parts.join(&format!("<<{}>>", &self.search_query))
+                                            }
+                                        };
+                                        
+                                        ui.label(format!("{}. ...{}...", i + 1, text));
+                                        
+                                        if ui.button("Jump to match").clicked() {
+                                            // Calculate the approximate page number based on position
+                                            let text = pdf_viewer.text();
+                                            if !text.is_empty() {
+                                                let position_ratio = m.position as f32 / text.len() as f32;
+                                                let page = (position_ratio * pdf_viewer.total_pages() as f32).floor() as usize;
+                                                
+                                                // Jump to the calculated page with search term highlighting
+                                                pdf_viewer.jump_to_page(page, Some(&self.search_query), ctx);
+                                            } else {
+                                                // Just load the PDF if we can't calculate the page
+                                                pdf_viewer.load_pdf(&result.file_path);
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                    }
+                });
+        }
     }
 }
 

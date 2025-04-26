@@ -475,6 +475,30 @@ impl PdfViewer {
         text_data.clone()
     }
     
+    /// Get the total number of pages
+    pub fn total_pages(&self) -> usize {
+        self.total_pages
+    }
+    
+    /// Jump to a specific page and optionally highlight a search term
+    pub fn jump_to_page(&mut self, page_num: usize, search_term: Option<&str>, ctx: &Context) {
+        if page_num < self.total_pages {
+            self.current_page = page_num;
+            
+            // Pre-render the page
+            if self.view_mode == ViewMode::Rendered {
+                self.render_page(self.current_page, ctx);
+            } else {
+                self.extract_page_text(self.current_page);
+            }
+            
+            // Enable text panel to show highlighting
+            if search_term.is_some() {
+                self.show_text_panel = true;
+            }
+        }
+    }
+    
     /// Show the PDF viewer
     pub fn show(&mut self, ui: &mut Ui, ctx: &Context) {
         // Process any loaded document
@@ -589,7 +613,46 @@ impl PdfViewer {
                                             .id_source("text_panel_scroll")
                                             .show(ui, |ui| {
                                                 if !page_data.text.is_empty() {
-                                                    ui.label(&page_data.text);
+                                                    // Display text with search highlighting if a query is active
+                                                    let search_query = ui.memory_mut(|mem| mem.data.get_temp::<String>("search_query".into()));
+                                                    
+                                                    if let Some(query) = search_query {
+                                                        if !query.is_empty() {
+                                                            // Highlight all occurrences of the search term
+                                                            let mut remaining_text = page_data.text.as_str();
+                                                            let mut last_end = 0;
+                                                            
+                                                            while let Some(pos) = remaining_text.to_lowercase().find(&query.to_lowercase()) {
+                                                                let start = last_end + pos;
+                                                                let end = start + query.len();
+                                                                
+                                                                // Add text before match
+                                                                if start > last_end {
+                                                                    ui.label(&page_data.text[last_end..start]);
+                                                                }
+                                                                
+                                                                // Add highlighted match
+                                                                ui.label(
+                                                                    RichText::new(&page_data.text[start..end])
+                                                                        .background_color(Color32::from_rgb(255, 255, 0))
+                                                                        .strong()
+                                                                );
+                                                                
+                                                                // Update position
+                                                                remaining_text = &remaining_text[pos + query.len()..];
+                                                                last_end = end;
+                                                            }
+                                                            
+                                                            // Add remaining text
+                                                            if last_end < page_data.text.len() {
+                                                                ui.label(&page_data.text[last_end..]);
+                                                            }
+                                                        } else {
+                                                            ui.label(&page_data.text);
+                                                        }
+                                                    } else {
+                                                        ui.label(&page_data.text);
+                                                    }
                                                 } else {
                                                     ui.label("No text content available");
                                                 }
